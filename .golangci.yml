@@ -1,0 +1,11 @@
+linters:
+  default: none
+  enable:
+    - gofmt
+    - govet
+    - errcheck
+    - staticcheck
+
+issues:
+  max-issues-per-linter: 50
+  max-same-issues: 3
