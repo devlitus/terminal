@@ -114,6 +114,7 @@ func (c *Client) sendRequest(req rpcRequest) error {
 
 // SendPrompt sends a prompt/turn request and calls onToken for each streamed token.
 // Returns ErrNotConnected if the subprocess is not running.
+// Respects ctx cancellation between line reads.
 func (c *Client) SendPrompt(ctx context.Context, prompt string, onToken func(string)) error {
 	if !c.connected {
 		return ErrNotConnected
@@ -129,20 +130,42 @@ func (c *Client) SendPrompt(ctx context.Context, prompt string, onToken func(str
 		return fmt.Errorf("acp: prompt/turn: %w", err)
 	}
 
+	type readResult struct {
+		line string
+		err  error
+	}
+
 	for {
+		// Check context before issuing the next blocking read.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		line, err := c.stdout.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("acp: read: %w", err)
+		// Run the blocking read in a goroutine so context cancellation
+		// can interrupt it. The goroutine is intentionally leaked only when
+		// ctx is cancelled — it will exit as soon as the agent writes a line
+		// or closes stdout.
+		ch := make(chan readResult, 1)
+		go func() {
+			line, err := c.stdout.ReadString('\n')
+			ch <- readResult{line, err}
+		}()
+
+		var res readResult
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case res = <-ch:
+		}
+
+		if res.err != nil {
+			return fmt.Errorf("acp: read: %w", res.err)
 		}
 
 		var resp rpcResponse
-		if err := json.Unmarshal([]byte(line), &resp); err != nil {
+		if err := json.Unmarshal([]byte(res.line), &resp); err != nil {
 			return fmt.Errorf("acp: unmarshal: %w", err)
 		}
 
