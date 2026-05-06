@@ -3,6 +3,7 @@ package block
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -25,6 +26,25 @@ func New(b datablock.Block) Model {
 func (m *Model) SetWidth(n int)      { m.width = n }
 func (m *Model) SetFocused(f bool)   { m.focused = f }
 func (m *Model) SetTermHeight(h int) { m.termHeight = h }
+
+// AppendOutput appends a line of output text to the block.
+func (m *Model) AppendOutput(data []byte) {
+	if len(data) == 0 {
+		return
+	}
+	m.block.Output = append(m.block.Output, string(data))
+}
+
+// SetDone transitions the block to its terminal state after the command exits.
+func (m *Model) SetDone(exitCode int, dur time.Duration) {
+	m.block.ExitCode = exitCode
+	m.block.Duration = dur
+	if exitCode == 0 {
+		m.block.State = datablock.StateSuccess
+	} else {
+		m.block.State = datablock.StateFailed
+	}
+}
 
 func (m Model) Init() tea.Cmd { return nil }
 
