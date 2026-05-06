@@ -17,9 +17,9 @@
 | T-01 | Project Scaffold | Code Expert | ✅ done | — |
 | T-02 | Architecture Document | Architect | ✅ done | T-01 |
 | T-03 | Design Tokens Package | Code Expert | ✅ done | T-01, T-02 |
-| T-04 | Block Data Model | Code Expert | 🔲 backlog | T-01, T-02 |
-| T-05 | Config Package | Code Expert | 🔲 backlog | T-01, T-02 |
-| T-06 | Shell Executor | Code Expert | 🔲 backlog | T-01, T-02 |
+| T-04 | Block Data Model | Code Expert | ✅ done | T-01, T-02 |
+| T-05 | Config Package | Code Expert | ✅ done | T-01, T-02 |
+| T-06 | Shell Executor | Code Expert | ✅ done | T-01, T-02 |
 | T-07 | ACP Client | Code Expert | 🔲 backlog | T-02, T-05 |
 | T-08 | Command Block UI Component | Code Expert | 🔲 backlog | T-03, T-04 |
 | T-09 | Header Bar Component | Code Expert | 🔲 backlog | T-03 |
