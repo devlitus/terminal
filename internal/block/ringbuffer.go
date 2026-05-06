@@ -23,9 +23,9 @@ func NewRingBuffer() *RingBuffer {
 	return &RingBuffer{}
 }
 
-// Add assigns an ID to b, then writes it into the buffer.
-// When full, the oldest entry is overwritten.
-func (r *RingBuffer) Add(b Block) {
+// Add assigns an ID to b, writes it into the buffer, and returns the block
+// with its assigned ID. When full, the oldest entry is overwritten.
+func (r *RingBuffer) Add(b Block) Block {
 	b.ID = nextID.Add(1)
 	r.mu.Lock()
 	r.buf[r.head] = b
@@ -34,6 +34,7 @@ func (r *RingBuffer) Add(b Block) {
 		r.size++
 	}
 	r.mu.Unlock()
+	return b
 }
 
 // All returns a copy of all blocks in insertion order (oldest first).

@@ -67,6 +67,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.vp.SetContent(m.renderBlocks())
 
+	case messages.ExecOutputMsg:
+		if idx := m.findBlock(msg.BlockID); idx >= 0 {
+			m.blocks[idx].AppendOutput(msg.Data)
+			m.vp.SetContent(m.renderBlocks())
+			if m.autoScroll {
+				m.vp.GotoBottom()
+			}
+		}
+		return m, nil
+
+	case messages.ExecDoneMsg:
+		if idx := m.findBlock(msg.BlockID); idx >= 0 {
+			m.blocks[idx].SetDone(msg.ExitCode, msg.Duration)
+			m.vp.SetContent(m.renderBlocks())
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "j", "down":
@@ -128,4 +145,14 @@ func emitBlockFocused(id uint64) tea.Cmd {
 	return func() tea.Msg {
 		return messages.BlockFocusedMsg{BlockID: fmt.Sprintf("%d", id)}
 	}
+}
+
+// findBlock returns the index of the block whose ID matches blockID, or -1.
+func (m Model) findBlock(blockID string) int {
+	for i, id := range m.blockIDs {
+		if fmt.Sprintf("%d", id) == blockID {
+			return i
+		}
+	}
+	return -1
 }
