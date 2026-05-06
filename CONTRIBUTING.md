@@ -75,3 +75,20 @@ When working on this codebase, agents must:
 4. Never add dependencies without a clear reason tied to a PRD requirement.
 5. Run `go build ./...` mentally — do not write code that cannot compile.
 6. Follow the package structure defined in `ARCHITECTURE.md` once it exists.
+
+---
+
+## Task closing checklist
+
+Before moving any task to `done/`, the Orchestrator **must** run a bug-review pass via Code Expert. The review focuses on:
+
+| Area | What to check |
+|------|--------------|
+| Error handling | No silently discarded errors; use `fmt.Errorf("context: %w", err)` |
+| Nil safety | No unguarded pointer dereferences |
+| Goroutine leaks | Every spawned goroutine has a clear exit path |
+| Context propagation | `context.Context` passed through, not stored in structs |
+| Race conditions | Shared state protected with mutexes or channels |
+| Resource cleanup | `defer` used for `Close()`, file handles, etc. |
+
+A task is only ✅ done after this review passes (or findings are addressed).
