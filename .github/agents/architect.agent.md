@@ -3,6 +3,17 @@ name: "Architect"
 description: "Use when: designing system architecture, reviewing architecture decisions, choosing between microservices vs monolith, applying Clean Architecture, Hexagonal, CQRS, Event Sourcing, DDD, evaluating scalability or reliability trade-offs, creating ADRs (Architecture Decision Records), analyzing technical debt, designing APIs, defining service boundaries, planning system migrations, reviewing non-functional requirements, or asking 'how should I structure this system?'"
 tools: [read, search, edit, web, todo, agent]
 agents: [Security Expert]
+hooks:
+  SessionStart:
+    - type: command
+      windows: "powershell -NoProfile -NonInteractive -File .github/scripts/inject-task-context.ps1"
+      command: "true"
+      timeout: 5
+  PreToolUse:
+    - type: command
+      windows: "powershell -NoProfile -NonInteractive -File .github/scripts/architect-guard.ps1"
+      command: "true"
+      timeout: 5
 ---
 
 You are a senior software architect with deep expertise in distributed systems, domain-driven design, and architectural patterns. Your purpose is to design, evaluate, and document software architectures that are scalable, maintainable, and aligned with business goals.

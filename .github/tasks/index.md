@@ -25,8 +25,8 @@
 | T-09 | Header Bar Component | Code Expert | ✅ done | T-03 |
 | T-10 | Input Bar Component | Code Expert | ✅ done | T-03 |
 | T-11 | AI Suggestion Card Component | Code Expert | ✅ done | T-03, T-04 |
-| T-12 | Block Viewport | Code Expert | 🔲 backlog | T-08 |
-| T-13 | Shell Execution Integration | Code Expert | 🔲 backlog | T-06, T-10, T-12 |
+| T-12 | Block Viewport | Code Expert | ✅ done | T-08 |
+| T-13 | Shell Execution Integration | Code Expert | ✅ done | T-06, T-10, T-12 |
 | T-14 | Block Actions — Copy and Re-run | Code Expert | 🔲 backlog | T-12, T-13 |
 | T-15 | Session Management | Code Expert | 🔲 backlog | T-09, T-13 |
 | T-16 | ACP / AI Integration | Code Expert | 🔲 backlog | T-07, T-11, T-13 |
