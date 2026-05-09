@@ -1,6 +1,6 @@
 # Forge — Product Requirements Document
 
-> Version 0.2 · May 2026 · Status: Draft
+> Version 1.0 · May 2026 · Status: v1 Implemented
 
 ---
 
@@ -84,7 +84,7 @@ Always visible at the bottom. Handles shell command execution, AI prompts (prefi
 
 ### 6.1 Shell execution
 - FR-01: Execute arbitrary shell commands in the current working directory
-- FR-02: Stream stdout/stderr output into the block in real time
+- FR-02: Stream stdout/stderr output into the block in real time; ANSI/VT100 escape sequences that manipulate cursor or screen are stripped before rendering
 - FR-03: Capture exit code and wall-clock duration per block
 - FR-04: Support `ctrl+c` to kill a running command
 
@@ -105,8 +105,8 @@ Always visible at the bottom. Handles shell command execution, AI prompts (prefi
 
 ### 6.4 Session
 - FR-16: Session starts at the current working directory
-- FR-17: `cd` changes the working directory; the next block header reflects it
-- FR-18: `clear` removes all blocks from the viewport (does not kill processes)
+- FR-17: `cd` is a session built-in (no subprocess); changes the working directory and the next block header reflects it
+- FR-18: `clear` is a session built-in (no subprocess); resets the ring buffer and clears the viewport
 
 ### 6.5 Command palette
 - FR-19: `ctrl+k` opens a fuzzy-search palette over recent commands and built-in actions
@@ -142,18 +142,33 @@ Always visible at the bottom. Handles shell command execution, AI prompts (prefi
 
 Forge acts as an **ACP Client**. The coding agent runs as a local subprocess (ACP Server over stdio).
 
-### ACP methods used in v1
+### Agent subprocess launch
 
-| Method | When Forge uses it |
-|--------|--------------------|
+The agent binary is resolved in order:
+1. `FORGE_AGENT_CMD` environment variable (if set)
+2. `forge-agent` on `$PATH`
+
+If the binary is not found, or if `api_base` is empty in config, Forge starts in **shell-only mode** — no AI features, no crash. The header bar shows an inline hint in ink-6:
+> `AI offline — add config: ~/.config/forge/config.toml`
+
+### Graceful degradation (NFR-05)
+
+- A background goroutine calls `cmd.Wait()` to detect subprocess death. After death, `SendPrompt` returns `ErrNotConnected` without blocking.
+- The root model sets `shellOnly = true` on any unrecoverable ACP error mid-session.
+- AI cards show `"AI error — try again"` in crimson-500 when a prompt fails.
+- `f` key in shell-only mode shows the offline hint in the header instead of calling ACP.
+
+### ACP messages used in v1
+
+| Message | When Forge uses it |
+|--------|-----------------|
 | `session/create` | On startup |
 | `prompt/turn` | User sends a message or triggers "Fix with AI" |
-| `tool_calls` | Display what the agent executed in a block |
-| `terminals/*` | Stream command output into blocks |
+| streaming tokens | Agent response streams token-by-token into the AI card |
 | `session/close` | On quit |
 
 ### Out of scope for v1
-`session/list`, `session/resume`, `session/fork`, `slash_commands`, auth methods.
+`session/list`, `session/resume`, `session/fork`, `slash_commands`, auth methods, `tool_calls` display, `terminals/*`.
 
 ---
 
@@ -185,8 +200,22 @@ Forge uses the design tokens and component patterns defined in `DESIGN.md`.
 Header:  bg=ink-2   fg=ink-7   badge=status-dependent   height=1 line
 Input:   bg=ink-1   prompt=ember-500   command=ink-9    height=1 line
 Output:  bg=ink-0   fg=ink-8   scrollable               max-height=terminal/3
-Border:  default=ink-3   focused=ember-500
+Border:  default=ink-3   focused=ember-500   (rounded, 1 char each side)
 ```
+
+Inner content renders at `terminalWidth - 2` to account for the rounded border characters. This ensures blocks stay within the terminal at any width (NFR-04).
+
+ANSI/VT100 escape sequences (cursor movement, screen clears) are stripped from command output before rendering to prevent TUI corruption.
+
+### Root layout
+
+```
+┌─ Header bar ────────────────────────────────┐  height = 1 line (+ 1 if statusHint)
+├─ Block viewport ────────────────────────────┤  height = termHeight - 2
+└─ Input bar ─────────────────────────────────┘  height = 1 line
+```
+
+Launched with `tea.WithAltScreen()` for full terminal ownership.
 
 ---
 
@@ -202,7 +231,8 @@ Border:  default=ink-3   focused=ember-500
 | `ctrl+c` | Kill running command |
 | `ctrl+k` | Open command palette |
 | `Esc` | Dismiss AI card / close palette |
-| `q` | Quit (with confirmation if commands are running) |
+| `q` | Quit immediately if no commands running; prompts `Quit? (y/n)` if any block is `StateRunning` |
+| `ctrl+c` (root) | Cancels the running command (does not quit); quits if no command is running |
 
 ---
 
@@ -224,11 +254,11 @@ These will NOT be built and should not influence architecture decisions:
 
 ## 13. Success criteria for v1
 
-- [ ] A developer can open Forge, run 10 commands, and see them as scrollable blocks
-- [ ] A failed command shows "Fix with AI"; the suggestion runs with one keystroke
-- [ ] The TUI connects to an ACP-compatible agent on startup without configuration
-- [ ] No crash on 500+ blocks in a session
-- [ ] Keyboard-only workflow is fully functional (no mouse required)
+- [x] A developer can open Forge, run 10 commands, and see them as scrollable blocks
+- [x] A failed command shows "Fix with AI"; the suggestion runs with one keystroke
+- [x] The TUI connects to an ACP-compatible agent on startup without configuration
+- [x] No crash on 500+ blocks in a session (ring buffer capped at 500, performance tests pass)
+- [x] Keyboard-only workflow is fully functional (no mouse required)
 
 ---
 
@@ -236,13 +266,15 @@ These will NOT be built and should not influence architecture decisions:
 
 | # | Question | Decision |
 |---|----------|----------|
-| OQ-1 | Which agent backend ships by default? | Internal ACP bridge using any OpenAI-compatible API. No hard dependency on any provider. |
+| OQ-1 | Which agent backend ships by default? | External `forge-agent` subprocess over ACP/stdio. Config passes API credentials. |
 | OQ-2 | Cap blocks in memory? | Ring buffer, cap at N=500. Drop oldest when exceeded. |
 | OQ-3 | Minimum Go version? | Go 1.23. |
+| OQ-4 | How is the agent binary resolved? | `FORGE_AGENT_CMD` env var → `forge-agent` on `$PATH` → shell-only fallback. |
+| OQ-5 | How are `cd` and `clear` handled? | Intercepted by the `session` package before reaching the shell; no subprocess spawned. |
 
 ### OQ-1 detail — Agent backend
 
-Forge ships an internal `agent` package that acts as both ACP server and LLM client. It speaks the OpenAI-compatible API so any provider works with a single config change:
+Forge connects to an external `forge-agent` subprocess that acts as both ACP server and LLM client. The agent speaks the OpenAI-compatible API; credentials are passed via config:
 
 ```toml
 # ~/.config/forge/config.toml
@@ -251,6 +283,8 @@ api_base = "http://localhost:11434/v1"  # Ollama (default, free)
 api_key  = ""                           # empty for local models
 model    = "qwen2.5-coder:7b"
 ```
+
+Defaults point to a local Ollama instance. Forge itself never makes HTTP calls — it only speaks ACP over stdio to the agent subprocess.
 
 **Recommended models:**
 
@@ -261,4 +295,4 @@ model    = "qwen2.5-coder:7b"
 | Complex reasoning | DeepSeek R1 | ~$0.55/M tokens |
 | Maximum flexibility | OpenRouter | Variable |
 
-If no config exists, Forge starts in **shell-only mode** (no AI features) and displays a one-line setup hint.
+If the agent binary is not found or `api_base` is empty, Forge starts in **shell-only mode** and shows an inline setup hint in the header.

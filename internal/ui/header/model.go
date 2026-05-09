@@ -45,7 +45,7 @@ func (m Model) View() string {
 	rightLen := lipgloss.Width(right)
 
 	if m.width == 0 {
-		return theme.HeaderBg.Render(theme.BodyText.Render(m.cwd) + " " + right)
+		return theme.BodyText.Render(m.cwd) + " " + right
 	}
 
 	availLeft := m.width - rightLen - 1
@@ -63,7 +63,7 @@ func (m Model) View() string {
 	}
 
 	content := left + strings.Repeat(" ", gap) + right
-	mainLine := theme.HeaderBg.Width(m.width).Render(content)
+	mainLine := lipgloss.NewStyle().Width(m.width).Render(content)
 	if m.statusHint != "" {
 		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("#5a6178")).Render(m.statusHint)
 		return mainLine + "\n" + hint

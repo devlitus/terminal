@@ -56,9 +56,10 @@ func newRootModel() rootModel {
 			shellOnly = true
 		}
 	}
+	inp := input.New()
 	m := rootModel{
 		header:    header.New(sess.Cwd),
-		input:     input.New(),
+		input:     inp,
 		vp:        viewportui.New(),
 		rb:        rb,
 		cancels:   make(map[string]context.CancelFunc),
@@ -321,7 +322,9 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.session.Cwd = msg.Cwd
 		raw, c := m.header.Update(msg)
 		m.header = raw.(header.Model)
-		return m, c
+		raw2, c2 := m.input.Update(msg)
+		m.input = raw2.(input.Model)
+		return m, tea.Batch(c, c2)
 	}
 
 	// Delegate remaining messages to input and viewport.

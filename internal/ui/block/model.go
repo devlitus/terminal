@@ -2,6 +2,7 @@ package block
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"time"
@@ -117,15 +118,20 @@ func (m Model) View() string {
 	if w == 0 {
 		w = 80
 	}
+	// The rounded border adds 1 char on each side; inner content must be 2 narrower.
+	innerW := w - 2
+	if innerW < 1 {
+		innerW = 1
+	}
 
 	parts := []string{
-		m.renderHeader(w),
-		m.renderInput(w),
-		m.renderOutput(w),
+		m.renderHeader(innerW),
+		m.renderInput(innerW),
+		m.renderOutput(innerW),
 	}
 	if m.block.AICard != nil && !m.block.AICard.Dismissed {
 		ac := aicard.New(*m.block.AICard)
-		ac.SetWidth(w)
+		ac.SetWidth(innerW)
 		parts = append(parts, ac.View())
 	}
 	content := strings.Join(parts, "\n")
@@ -137,8 +143,8 @@ func (m Model) View() string {
 }
 
 func (m Model) renderHeader(w int) string {
-	left := theme.BodyText.Render(m.block.Dir)
-	right := m.renderHeaderRight()
+	left := m.renderHeaderLeft()
+	right := m.renderBadge()
 
 	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
@@ -146,33 +152,49 @@ func (m Model) renderHeader(w int) string {
 	}
 
 	inner := left + strings.Repeat(" ", gap) + right
-	return theme.HeaderBg.Width(w).Render(inner)
+	return lipgloss.NewStyle().Width(w).Render(inner)
 }
 
-func (m Model) renderHeaderRight() string {
-	badge := m.renderBadge()
-	if m.block.State == datablock.StateRunning {
-		return badge
+func (m Model) renderHeaderLeft() string {
+	sep := theme.MutedText.Render(" · ")
+
+	dotColor := theme.Solar500
+	switch m.block.State {
+	case datablock.StateSuccess:
+		dotColor = theme.Mint500
+	case datablock.StateFailed:
+		dotColor = theme.Crimson500
 	}
-	dur := fmt.Sprintf("%.1fs", m.block.Duration.Seconds())
-	return theme.MutedText.Render(dur) + " " + badge
+	dot := lipgloss.NewStyle().Foreground(dotColor).Render("●")
+
+	home, _ := os.UserHomeDir()
+	dir := strings.Replace(m.block.Dir, home, "~", 1)
+	path := theme.BodyText.Render(dir)
+
+	if m.block.State == datablock.StateRunning {
+		return dot + " " + path + sep + theme.BodyText.Render("running")
+	}
+
+	exit := theme.BodyText.Render(fmt.Sprintf("exit %d", m.block.ExitCode))
+	dur := theme.BodyText.Render(fmt.Sprintf("%.1fs", m.block.Duration.Seconds()))
+	return dot + " " + path + sep + exit + sep + dur
 }
 
 func (m Model) renderBadge() string {
 	switch m.block.State {
 	case datablock.StateSuccess:
-		return theme.BadgeSuccess.Render("success")
+		return lipgloss.NewStyle().Foreground(theme.Ink0).Background(theme.Mint500).Padding(0, 1).Render("✓ success")
 	case datablock.StateFailed:
-		return theme.BadgeFailed.Render("failed")
+		return lipgloss.NewStyle().Foreground(theme.Ink0).Background(theme.Crimson500).Padding(0, 1).Render("✗ failed")
 	default:
-		return theme.BadgeRunning.Render("running")
+		return lipgloss.NewStyle().Foreground(theme.Ink0).Background(theme.Solar500).Padding(0, 1).Render("running")
 	}
 }
 
 func (m Model) renderInput(w int) string {
 	prompt := lipgloss.NewStyle().Foreground(theme.Ember500).Render("❯")
 	cmd := lipgloss.NewStyle().Foreground(theme.Ink9).Render(m.block.Command)
-	return theme.InputBg.Width(w).Render(prompt + " " + cmd)
+	return lipgloss.NewStyle().Width(w).Render(prompt + " " + cmd)
 }
 
 func (m Model) renderOutput(w int) string {
@@ -187,7 +209,5 @@ func (m Model) renderOutput(w int) string {
 	}
 
 	text := strings.Join(lines, "\n")
-	return theme.CanvasBg.Width(w).Render(
-		lipgloss.NewStyle().Foreground(theme.Ink8).Render(text),
-	)
+	return lipgloss.NewStyle().Width(w).Foreground(theme.Ink8).Render(text)
 }

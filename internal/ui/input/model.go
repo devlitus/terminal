@@ -61,5 +61,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	return lipgloss.NewStyle().Background(theme.Ink1).Width(m.width).Render(m.textinput.View())
+	w := m.width
+	if w < 4 {
+		w = 4
+	}
+	inner := w - 2
+	content := m.textinput.View()
+	padded := lipgloss.NewStyle().Width(inner).Render(content)
+	return theme.BlockBorderFocused.Render(padded)
 }
