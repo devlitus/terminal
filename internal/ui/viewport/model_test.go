@@ -9,6 +9,24 @@ import (
 	"github.com/forge-tui/forge/internal/messages"
 )
 
+// extractSubmitMsg recursively unwraps a tea.Cmd looking for a SubmitMsg.
+func extractSubmitMsg(cmd tea.Cmd) (messages.SubmitMsg, bool) {
+	if cmd == nil {
+		return messages.SubmitMsg{}, false
+	}
+	switch msg := cmd().(type) {
+	case messages.SubmitMsg:
+		return msg, true
+	case tea.BatchMsg:
+		for _, c := range msg {
+			if sm, ok := extractSubmitMsg(c); ok {
+				return sm, true
+			}
+		}
+	}
+	return messages.SubmitMsg{}, false
+}
+
 // makeModel creates a Model pre-loaded with n blocks (IDs 1..n, commands "cmd1".."cmdn")
 // and initialised with a 120×30 terminal size.
 func makeModel(n int) Model {
@@ -135,4 +153,79 @@ func TestAutoScroll(t *testing.T) {
 			t.Errorf("want focusedIdx 2 after AppendBlock with autoScroll=true, got %d", m.FocusedIdx())
 		}
 	})
+}
+
+func TestCopyNoFocus(t *testing.T) {
+	m := New() // focusedIdx == -1, no blocks
+	// must not panic and must emit no SubmitMsg
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = updated.(Model)
+	if _, ok := extractSubmitMsg(cmd); ok {
+		t.Error("y with no focus: unexpected SubmitMsg emitted")
+	}
+}
+
+func TestRerunNoFocus(t *testing.T) {
+	m := New() // focusedIdx == -1, no blocks
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = updated.(Model)
+	if _, ok := extractSubmitMsg(cmd); ok {
+		t.Error("r with no focus: unexpected SubmitMsg emitted")
+	}
+}
+
+func TestRerunRunningBlock(t *testing.T) {
+	m := New()
+	raw, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = raw.(Model)
+	m.AppendBlock(datablock.Block{
+		ID:      1,
+		Command: "long-running",
+		State:   datablock.StateRunning,
+	})
+	// focusedIdx == 0 (autoScroll), block is Running
+	_, cmd := pressKey(m, "r")
+	if _, ok := extractSubmitMsg(cmd); ok {
+		t.Error("r on StateRunning block: unexpected SubmitMsg emitted")
+	}
+}
+
+func TestRerunIdleBlock(t *testing.T) {
+	m := New()
+	raw, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = raw.(Model)
+	m.AppendBlock(datablock.Block{
+		ID:      1,
+		Command: "echo hello",
+		State:   datablock.StateSuccess,
+	})
+	// focusedIdx == 0
+	_, cmd := pressKey(m, "r")
+	sm, ok := extractSubmitMsg(cmd)
+	if !ok {
+		t.Fatal("r on StateSuccess block: expected SubmitMsg, got none")
+	}
+	if sm.Input != "echo hello" {
+		t.Errorf("SubmitMsg.Input: want %q, got %q", "echo hello", sm.Input)
+	}
+	if sm.IsAIPrompt {
+		t.Error("SubmitMsg.IsAIPrompt: want false, got true")
+	}
+}
+
+func TestCopyGracefulOnUnavailable(t *testing.T) {
+	// This test verifies that y on a block with output does not panic,
+	// regardless of whether a clipboard is available in the test environment.
+	m := New()
+	raw, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	m = raw.(Model)
+	m.AppendBlock(datablock.Block{
+		ID:      1,
+		Command: "echo hi",
+		State:   datablock.StateSuccess,
+		Output:  []string{"hello"},
+	})
+	// Must not panic; clipboard may or may not be available in CI.
+	updated, _ := pressKey(m, "y")
+	_ = updated // statusNotice is either "" or "clipboard unavailable" — both are valid
 }

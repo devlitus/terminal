@@ -1,0 +1,10 @@
+# Binaries
+forge
+forge.exe
+*.exe
+
+# Build output
+/dist/
+
+# Test cache
+/tmp/
