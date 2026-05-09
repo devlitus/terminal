@@ -314,7 +314,8 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.ViewportClearMsg:
 		m.vp = viewportui.New()
-		return m, nil
+		// Force a full terminal repaint to erase any residual screen content.
+		return m, tea.ClearScreen
 
 	case messages.CwdChangedMsg:
 		m.session.Cwd = msg.Cwd

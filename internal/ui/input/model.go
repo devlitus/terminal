@@ -40,7 +40,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.textinput.SetValue("")
-			if v == "clear" {
+			if v == "clear" || strings.EqualFold(v, "cls") {
 				return m, func() tea.Msg { return messages.ViewportClearMsg{} }
 			}
 			isAI := strings.HasPrefix(v, "/") || strings.HasPrefix(v, "@")
