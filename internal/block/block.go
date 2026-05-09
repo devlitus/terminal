@@ -18,6 +18,7 @@ type AICard struct {
 	Streaming bool
 	Accepted  bool
 	Dismissed bool
+	ErrMsg    string
 }
 
 // Block represents a single executed command and its output.

@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/atotto/clipboard"
 	bubblesviewport "github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	datablock "github.com/forge-tui/forge/internal/block"
 	"github.com/forge-tui/forge/internal/messages"
 	blockui "github.com/forge-tui/forge/internal/ui/block"
@@ -14,13 +16,14 @@ import (
 // Model is the scrollable container that stacks command block views vertically.
 // It owns focus state and maps keyboard navigation to BlockFocusedMsg events.
 type Model struct {
-	blocks     []blockui.Model
-	blockIDs   []uint64 // parallel to blocks; tracks each block's ID for focus events
-	vp         bubblesviewport.Model
-	focusedIdx int
-	autoScroll bool
-	width      int
-	height     int
+	blocks       []blockui.Model
+	blockIDs     []uint64 // parallel to blocks; tracks each block's ID for focus events
+	vp           bubblesviewport.Model
+	focusedIdx   int
+	autoScroll   bool
+	width        int
+	height       int
+	statusNotice string
 }
 
 // New returns a Model with no blocks, no focus, and autoScroll enabled.
@@ -84,6 +87,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case messages.ACPTokenMsg:
+		if idx := m.findBlock(msg.BlockID); idx >= 0 {
+			m.blocks[idx].AppendAIToken(msg.Token)
+			m.vp.SetContent(m.renderBlocks())
+			if m.autoScroll {
+				m.vp.GotoBottom()
+			}
+		}
+		return m, nil
+
+	case messages.ACPDoneMsg:
+		if idx := m.findBlock(msg.BlockID); idx >= 0 {
+			m.blocks[idx].SetAIStreamDone()
+			m.vp.SetContent(m.renderBlocks())
+		}
+		return m, nil
+
+	case messages.DismissAIMsg:
+		for i := range m.blocks {
+			blk := m.blocks[i].Block()
+			if blk.AICard != nil && !blk.AICard.Dismissed {
+				m.blocks[i].DismissAICard()
+				m.vp.SetContent(m.renderBlocks())
+				break
+			}
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "j", "down":
@@ -102,6 +133,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.vp.SetContent(m.renderBlocks())
 				cmds = append(cmds, emitBlockFocused(m.blockIDs[m.focusedIdx]))
 			}
+		case "y":
+			if m.focusedIdx >= 0 {
+				blk := m.blocks[m.focusedIdx].Block()
+				text := strings.Join(blk.Output, "\n")
+				if err := clipboard.WriteAll(text); err != nil {
+					m.statusNotice = "clipboard unavailable"
+				} else {
+					m.statusNotice = ""
+				}
+			}
+		case "r":
+			if m.focusedIdx >= 0 {
+				blk := m.blocks[m.focusedIdx].Block()
+				if blk.State != datablock.StateRunning {
+					cmd := blk.Command
+					cmds = append(cmds, func() tea.Msg {
+						return messages.SubmitMsg{Input: cmd, IsAIPrompt: false}
+					})
+				}
+			}
+		case "enter", "esc", "d":
+			if m.focusedIdx >= 0 {
+				blk := m.blocks[m.focusedIdx].Block()
+				if blk.AICard != nil && !blk.AICard.Dismissed && !blk.AICard.Streaming {
+					raw, cmd := m.blocks[m.focusedIdx].Update(msg)
+					m.blocks[m.focusedIdx] = raw.(blockui.Model)
+					return m, cmd
+				}
+			}
 		}
 	}
 
@@ -113,8 +173,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View renders all blocks inside the bubbles viewport widget.
+// When a statusNotice is set (e.g. clipboard unavailable), it is appended below.
 func (m Model) View() string {
+	if m.statusNotice != "" {
+		notice := lipgloss.NewStyle().Foreground(lipgloss.Color("#5a6178")).Render(m.statusNotice)
+		return m.vp.View() + "\n" + notice
+	}
 	return m.vp.View()
+}
+
+// InitAICard initialises a streaming AICard on the block identified by blockID.
+func (m *Model) InitAICard(blockID string) {
+	if idx := m.findBlock(blockID); idx >= 0 {
+		m.blocks[idx].StartAIStreaming()
+		m.vp.SetContent(m.renderBlocks())
+	}
+}
+
+// SetAIError marks the AI card on the given block as errored and stops streaming.
+func (m *Model) SetAIError(blockID, errMsg string) {
+	if idx := m.findBlock(blockID); idx >= 0 {
+		m.blocks[idx].SetAIError(errMsg)
+		m.vp.SetContent(m.renderBlocks())
+	}
 }
 
 // Blocks returns the block model slice (used by tests).

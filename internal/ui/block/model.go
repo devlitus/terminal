@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	datablock "github.com/forge-tui/forge/internal/block"
 	"github.com/forge-tui/forge/internal/theme"
+	aicard "github.com/forge-tui/forge/internal/ui/aicard"
 )
 
 // Model renders a single command block with header, input, and output sections.
@@ -26,6 +27,9 @@ func New(b datablock.Block) Model {
 func (m *Model) SetWidth(n int)      { m.width = n }
 func (m *Model) SetFocused(f bool)   { m.focused = f }
 func (m *Model) SetTermHeight(h int) { m.termHeight = h }
+
+// Block returns the underlying data block (used by the viewport for copy/re-run).
+func (m Model) Block() datablock.Block { return m.block }
 
 // AppendOutput appends a line of output text to the block.
 func (m *Model) AppendOutput(data []byte) {
@@ -46,6 +50,40 @@ func (m *Model) SetDone(exitCode int, dur time.Duration) {
 	}
 }
 
+// StartAIStreaming initialises an AICard on this block and marks it as streaming.
+func (m *Model) StartAIStreaming() {
+	m.block.AICard = &datablock.AICard{Streaming: true}
+}
+
+// AppendAIToken appends a token to the active AICard.
+func (m *Model) AppendAIToken(token string) {
+	if m.block.AICard != nil {
+		m.block.AICard.Tokens = append(m.block.AICard.Tokens, token)
+	}
+}
+
+// SetAIStreamDone marks the AICard as no longer streaming.
+func (m *Model) SetAIStreamDone() {
+	if m.block.AICard != nil {
+		m.block.AICard.Streaming = false
+	}
+}
+
+// DismissAICard marks the AICard as dismissed so it no longer renders.
+func (m *Model) DismissAICard() {
+	if m.block.AICard != nil {
+		m.block.AICard.Dismissed = true
+	}
+}
+
+// SetAIError marks the AICard as errored with msg and stops streaming.
+func (m *Model) SetAIError(msg string) {
+	if m.block.AICard != nil {
+		m.block.AICard.ErrMsg = msg
+		m.block.AICard.Streaming = false
+	}
+}
+
 func (m Model) Init() tea.Cmd { return nil }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -53,6 +91,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.termHeight = msg.Height
+	case tea.KeyMsg:
+		// When an AI card is active and done streaming, delegate key events to it.
+		if m.block.AICard != nil && !m.block.AICard.Dismissed && !m.block.AICard.Streaming {
+			ac := aicard.New(*m.block.AICard)
+			_, cmd := ac.Update(msg)
+			return m, cmd
+		}
 	}
 	return m, nil
 }
@@ -63,11 +108,17 @@ func (m Model) View() string {
 		w = 80
 	}
 
-	content := strings.Join([]string{
+	parts := []string{
 		m.renderHeader(w),
 		m.renderInput(w),
 		m.renderOutput(w),
-	}, "\n")
+	}
+	if m.block.AICard != nil && !m.block.AICard.Dismissed {
+		ac := aicard.New(*m.block.AICard)
+		ac.SetWidth(w)
+		parts = append(parts, ac.View())
+	}
+	content := strings.Join(parts, "\n")
 
 	if m.focused {
 		return theme.BlockBorderFocused.Render(content)

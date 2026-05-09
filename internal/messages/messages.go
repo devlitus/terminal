@@ -57,7 +57,7 @@ type ViewportClearMsg struct{}
 // SubmitMsg is emitted by the input bar when the user presses Enter.
 // IsAIPrompt is true when Input starts with "/" or "@".
 type SubmitMsg struct {
-	Input     string
+	Input      string
 	IsAIPrompt bool
 }
 
@@ -69,3 +69,15 @@ type AcceptAIMsg struct {
 
 // DismissAIMsg is emitted by the AI card when the user presses Esc or "d".
 type DismissAIMsg struct{}
+
+// ClosePaletteMsg is emitted by the palette when the user presses Esc or
+// selects an item, signalling the root model to close the palette overlay.
+type ClosePaletteMsg struct{}
+
+// CopyLastOutputMsg is emitted by the command palette when the user selects
+// "Copy last output".
+type CopyLastOutputMsg struct{}
+
+// FixWithAIMsg is emitted by the command palette when the user selects
+// "Fix with AI".
+type FixWithAIMsg struct{}

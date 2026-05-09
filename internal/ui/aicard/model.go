@@ -69,6 +69,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View renders the AI card: a plasma-bordered body with token text,
 // a blinking cursor while streaming, or action hints when done.
 func (m Model) View() string {
+	if m.card.ErrMsg != "" {
+		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ef4444"))
+		body := bodyStyle.Render(errStyle.Render(m.card.ErrMsg))
+		return leftBorderStyle.Render(body)
+	}
+
 	tokenText := strings.Join(m.card.Tokens, "")
 
 	var content string
