@@ -5,6 +5,8 @@ linters:
     - govet
     - errcheck
     - staticcheck
+    - misspell
+    - godot
 
 issues:
   max-issues-per-linter: 50
