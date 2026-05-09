@@ -11,6 +11,15 @@ var (
 	BlockBorderFocused = lipgloss.NewStyle().
 				Border(lipgloss.RoundedBorder()).
 				BorderForeground(Ember500)
+
+	// BlockBorderInput is used exclusively by the input bar.
+	// Ink5 keeps it visually distinct from both focused (ember-500) and
+	// unfocused (ink-3) command blocks, preventing the "duplicate block"
+	// illusion that arises when the viewport is exactly full and the input
+	// border abuts the last block's bottom border with identical styling.
+	BlockBorderInput = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(Ink5)
 )
 
 // Surface backgrounds.

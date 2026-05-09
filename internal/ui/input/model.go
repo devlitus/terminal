@@ -68,5 +68,5 @@ func (m Model) View() string {
 	inner := w - 2
 	content := m.textinput.View()
 	padded := lipgloss.NewStyle().Width(inner).Render(content)
-	return theme.BlockBorderFocused.Render(padded)
+	return theme.BlockBorderInput.Render(padded)
 }
