@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	osExec "os/exec"
+	"sync"
 	"sync/atomic"
 
 	"github.com/forge-tui/forge/internal/config"
@@ -48,7 +49,10 @@ type Client struct {
 	stdin     io.WriteCloser
 	stdout    *bufio.Reader
 	nextID    atomic.Int64
+	mu        sync.Mutex // protects connected
 	connected bool
+	waitDone  chan struct{} // closed when background cmd.Wait() returns
+	waitErr   error         // result of cmd.Wait(), read after waitDone is closed
 }
 
 // Connect starts the agent subprocess defined by the FORGE_AGENT_CMD env var
@@ -89,6 +93,16 @@ func (c *Client) Connect(cfg *config.Config) error {
 
 	c.connected = true
 
+	// Background goroutine: detect subprocess death and clear connected.
+	c.waitDone = make(chan struct{})
+	go func() {
+		c.waitErr = c.cmd.Wait()
+		c.mu.Lock()
+		c.connected = false
+		c.mu.Unlock()
+		close(c.waitDone)
+	}()
+
 	if err := c.sendRequest(rpcRequest{
 		JSONRPC: "2.0",
 		Method:  "session/create",
@@ -116,7 +130,10 @@ func (c *Client) sendRequest(req rpcRequest) error {
 // Returns ErrNotConnected if the subprocess is not running.
 // Respects ctx cancellation between line reads.
 func (c *Client) SendPrompt(ctx context.Context, prompt string, onToken func(string)) error {
-	if !c.connected {
+	c.mu.Lock()
+	connected := c.connected
+	c.mu.Unlock()
+	if !connected {
 		return ErrNotConnected
 	}
 
@@ -193,7 +210,10 @@ func (c *Client) SendPrompt(ctx context.Context, prompt string, onToken func(str
 // Close sends session/close and waits for the subprocess to exit.
 // If not connected, Close is a no-op.
 func (c *Client) Close() error {
-	if !c.connected {
+	c.mu.Lock()
+	connected := c.connected
+	c.mu.Unlock()
+	if !connected {
 		return nil
 	}
 
@@ -205,11 +225,16 @@ func (c *Client) Close() error {
 		Params:  struct{}{},
 	})
 
+	c.mu.Lock()
 	c.connected = false
+	c.mu.Unlock()
 	_ = c.stdin.Close()
 
-	if c.cmd != nil {
-		return c.cmd.Wait()
+	// Wait for the background goroutine's cmd.Wait() instead of calling
+	// Wait() a second time (double-Wait races and panics on some platforms).
+	if c.waitDone != nil {
+		<-c.waitDone
+		return c.waitErr
 	}
 	return nil
 }

@@ -1,6 +1,6 @@
-# Binaries
-forge
-forge.exe
+# Binaries (root-level built outputs only)
+/forge
+/forge.exe
 *.exe
 
 # Build output

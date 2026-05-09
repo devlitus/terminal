@@ -17,11 +17,16 @@ type Model struct {
 	cwd        string
 	blockCount int
 	width      int
+	statusHint string
 }
 
 func New(cwd string) Model {
 	return Model{cwd: cwd}
 }
+
+// SetStatusHint sets a secondary hint line shown below the main header in ink-6.
+// Pass an empty string to clear it.
+func (m *Model) SetStatusHint(hint string) { m.statusHint = hint }
 
 func (m Model) Init() tea.Cmd { return nil }
 
@@ -58,7 +63,12 @@ func (m Model) View() string {
 	}
 
 	content := left + strings.Repeat(" ", gap) + right
-	return theme.HeaderBg.Width(m.width).Render(content)
+	mainLine := theme.HeaderBg.Width(m.width).Render(content)
+	if m.statusHint != "" {
+		hint := lipgloss.NewStyle().Foreground(lipgloss.Color("#5a6178")).Render(m.statusHint)
+		return mainLine + "\n" + hint
+	}
+	return mainLine
 }
 
 // truncateCwd shortens cwd to fit within maxWidth visual characters.

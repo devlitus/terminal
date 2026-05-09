@@ -110,3 +110,41 @@ func TestSendPromptRPCError(t *testing.T) {
 	}
 }
 
+func TestSendPromptAfterSubprocessDeath(t *testing.T) {
+	// Simulate the background Wait goroutine detecting subprocess death:
+	// it acquires the mutex and sets connected = false. SendPrompt must
+	// return an error immediately — no hang, no data race.
+	agentReader, clientWriter := io.Pipe()
+	clientReader, agentWriter := io.Pipe()
+	t.Cleanup(func() {
+		clientWriter.Close()
+		agentWriter.Close()
+		agentReader.Close()
+		clientReader.Close()
+	})
+
+	c := &Client{
+		stdin:  clientWriter,
+		stdout: bufio.NewReader(clientReader),
+	}
+	c.nextID.Store(1)
+
+	// Concurrent goroutine mirrors what the background Wait goroutine does
+	// when the subprocess exits: drains the request then clears connected.
+	go func() {
+		bufio.NewScanner(agentReader).Scan()
+		c.mu.Lock()
+		c.connected = false
+		c.mu.Unlock()
+		agentWriter.Close()
+	}()
+
+	c.mu.Lock()
+	c.connected = true
+	c.mu.Unlock()
+
+	err := c.SendPrompt(context.Background(), "hello", func(string) {})
+	if err == nil {
+		t.Fatal("expected error from dead subprocess, got nil")
+	}
+}

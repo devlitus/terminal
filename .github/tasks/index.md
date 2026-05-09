@@ -27,11 +27,11 @@
 | T-11 | AI Suggestion Card Component | Code Expert | ✅ done | T-03, T-04 |
 | T-12 | Block Viewport | Code Expert | ✅ done | T-08 |
 | T-13 | Shell Execution Integration | Code Expert | ✅ done | T-06, T-10, T-12 |
-| T-14 | Block Actions — Copy and Re-run | Code Expert | 🔲 backlog | T-12, T-13 |
-| T-15 | Session Management | Code Expert | 🔲 backlog | T-09, T-13 |
-| T-16 | ACP / AI Integration | Code Expert | 🔲 backlog | T-07, T-11, T-13 |
-| T-17 | Command Palette | Code Expert | 🔲 backlog | T-10, T-12 |
-| T-18 | Root TUI Assembly | Code Expert | 🔲 backlog | T-14, T-15, T-16, T-17 |
-| T-19 | Graceful ACP Degradation | Code Expert | 🔲 backlog | T-16, T-18 |
+| T-14 | Block Actions — Copy and Re-run | Code Expert | ✅ done | T-12, T-13 |
+| T-15 | Session Management | Code Expert | ✅ done | T-09, T-13 |
+| T-16 | ACP / AI Integration | Code Expert | ✅ done | T-07, T-11, T-13 |
+| T-17 | Command Palette | Code Expert | ✅ done | T-10, T-12 |
+| T-18 | Root TUI Assembly | Code Expert | ✅ done | T-14, T-15, T-16, T-17 |
+| T-19 | Graceful ACP Degradation | Code Expert | ✅ done | T-16, T-18 |
 | T-20 | Performance and Regression Tests | Code Expert | 🔲 backlog | T-18 |
 | T-21 | CI Finalization and README | Code Expert | 🔲 backlog | T-18 |
