@@ -2,6 +2,7 @@ package block
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -11,6 +12,12 @@ import (
 	"github.com/forge-tui/forge/internal/theme"
 	aicard "github.com/forge-tui/forge/internal/ui/aicard"
 )
+
+// ansiEscape matches ANSI/VT100 escape sequences that manipulate cursor
+// position, clear the screen, or otherwise affect terminal layout.
+// These sequences must be stripped from command output before rendering
+// inside a block, or they will corrupt the TUI display (e.g. `cls`).
+var ansiEscape = regexp.MustCompile(`\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])`)
 
 // Model renders a single command block with header, input, and output sections.
 type Model struct {
@@ -32,11 +39,14 @@ func (m *Model) SetTermHeight(h int) { m.termHeight = h }
 func (m Model) Block() datablock.Block { return m.block }
 
 // AppendOutput appends a line of output text to the block.
+// ANSI escape sequences that manipulate the terminal (cursor moves, screen
+// clears, etc.) are stripped so they cannot corrupt the TUI layout.
 func (m *Model) AppendOutput(data []byte) {
 	if len(data) == 0 {
 		return
 	}
-	m.block.Output = append(m.block.Output, string(data))
+	clean := ansiEscape.ReplaceAllString(string(data), "")
+	m.block.Output = append(m.block.Output, clean)
 }
 
 // SetDone transitions the block to its terminal state after the command exits.

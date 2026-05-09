@@ -33,5 +33,5 @@
 | T-17 | Command Palette | Code Expert | ✅ done | T-10, T-12 |
 | T-18 | Root TUI Assembly | Code Expert | ✅ done | T-14, T-15, T-16, T-17 |
 | T-19 | Graceful ACP Degradation | Code Expert | ✅ done | T-16, T-18 |
-| T-20 | Performance and Regression Tests | Code Expert | 🔲 backlog | T-18 |
-| T-21 | CI Finalization and README | Code Expert | 🔲 backlog | T-18 |
+| T-20 | Performance and Regression Tests | Code Expert | ✅ done | T-18 |
+| T-21 | CI Finalization and README | Code Expert | ✅ done | T-18 |

@@ -64,7 +64,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.vp.Width = msg.Width
-		m.vp.Height = msg.Height - 2 // reserve one row for header, one for input bar
+		m.vp.Height = msg.Height // height is pre-calculated by the root model
 		for i := range m.blocks {
 			m.blocks[i].SetWidth(msg.Width)
 		}

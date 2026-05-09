@@ -111,7 +111,10 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		raw2, c2 := m.input.Update(msg)
 		m.input = raw2.(input.Model)
 		cmds = append(cmds, c2)
-		raw3, c3 := m.vp.Update(msg)
+		// Pass the correct viewport height: total minus actual header lines minus input bar.
+		headerH := lipgloss.Height(m.header.View())
+		vpMsg := tea.WindowSizeMsg{Width: msg.Width, Height: msg.Height - headerH - 1}
+		raw3, c3 := m.vp.Update(vpMsg)
 		m.vp = raw3.(viewportui.Model)
 		cmds = append(cmds, c3)
 		return m, tea.Batch(cmds...)
@@ -272,6 +275,13 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.shellOnly = true
 			m.header.SetStatusHint("AI offline — add config: ~/.config/forge/config.toml")
 			m.vp.SetAIError(msg.BlockID, "AI error — try again")
+			// Re-calculate viewport height now that the header has grown by one line.
+			if m.termWidth > 0 && m.termHeight > 0 {
+				headerH := lipgloss.Height(m.header.View())
+				vpMsg := tea.WindowSizeMsg{Width: m.termWidth, Height: m.termHeight - headerH - 1}
+				rawVp, _ := m.vp.Update(vpMsg)
+				m.vp = rawVp.(viewportui.Model)
+			}
 			return m, nil
 		}
 		raw, c := m.vp.Update(msg)
