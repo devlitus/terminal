@@ -60,3 +60,11 @@ func (r *RingBuffer) Len() int {
 	defer r.mu.RUnlock()
 	return r.size
 }
+
+// Reset clears all entries from the buffer without reallocating.
+func (r *RingBuffer) Reset() {
+	r.mu.Lock()
+	r.head = 0
+	r.size = 0
+	r.mu.Unlock()
+}
