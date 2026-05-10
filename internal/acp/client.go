@@ -7,16 +7,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	osExec "os/exec"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/forge-tui/forge/internal/config"
 )
 
-// ErrNotConnected is returned by SendPrompt when the agent subprocess is not running.
+// ErrNotConnected is returned by SendPrompt when the agent is not connected.
 var ErrNotConnected = errors.New("acp: not connected")
+
+// --- Legacy ACP JSON-RPC types (kept for test compatibility via in-process pipes) ---
 
 type rpcRequest struct {
 	JSONRPC string `json:"jsonrpc"`
@@ -43,92 +45,56 @@ type streamParams struct {
 	Token string `json:"token"`
 }
 
-// Client manages the lifecycle of an ACP agent subprocess over stdio.
+// Client manages AI agent communication.
+//
+// Production mode: calls the Ollama OpenAI-compatible HTTP API directly.
+// Test mode: if stdin/stdout pipes are injected, speaks ACP JSON-RPC over them.
 type Client struct {
-	cmd       *osExec.Cmd
-	stdin     io.WriteCloser
-	stdout    *bufio.Reader
-	nextID    atomic.Int64
-	mu        sync.Mutex // protects connected
+	// HTTP mode fields
+	apiBase    string
+	apiKey     string
+	model      string
+	httpClient *http.Client
+
+	// Legacy ACP/stdio fields — used only by tests that inject pipes directly.
+	stdin    io.WriteCloser
+	stdout   *bufio.Reader
+	nextID   atomic.Int64
+	mu       sync.Mutex
 	connected bool
-	waitDone  chan struct{} // closed when background cmd.Wait() returns
-	waitErr   error         // result of cmd.Wait(), read after waitDone is closed
+	waitDone  chan struct{}
+	waitErr   error
 }
 
-// Connect starts the agent subprocess defined by the FORGE_AGENT_CMD env var
-// (falling back to "forge-agent") and sends the session/create handshake.
+// Connect initialises the client for the given config.
+// In HTTP mode it stores the API parameters; no subprocess is launched.
 // If cfg.IsShellOnly() is true, Connect is a no-op.
 func (c *Client) Connect(cfg *config.Config) error {
 	if cfg.IsShellOnly() {
 		return nil
 	}
 
-	agentCmd := os.Getenv("FORGE_AGENT_CMD")
-	if agentCmd == "" {
-		agentCmd = "forge-agent"
-	}
-
-	path, err := osExec.LookPath(agentCmd)
-	if err != nil {
-		return fmt.Errorf("acp: agent binary %q not found: %w", agentCmd, err)
-	}
-
-	c.cmd = osExec.Command(path)
-
-	stdin, err := c.cmd.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("acp: stdin pipe: %w", err)
-	}
-	c.stdin = stdin
-
-	stdout, err := c.cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("acp: stdout pipe: %w", err)
-	}
-	c.stdout = bufio.NewReader(stdout)
-
-	if err := c.cmd.Start(); err != nil {
-		return fmt.Errorf("acp: start agent: %w", err)
-	}
-
-	c.connected = true
-
-	// Background goroutine: detect subprocess death and clear connected.
-	c.waitDone = make(chan struct{})
-	go func() {
-		c.waitErr = c.cmd.Wait()
+	// If stdin was already injected (test mode), just mark as connected.
+	if c.stdin != nil {
 		c.mu.Lock()
-		c.connected = false
+		c.connected = true
 		c.mu.Unlock()
-		close(c.waitDone)
-	}()
-
-	if err := c.sendRequest(rpcRequest{
-		JSONRPC: "2.0",
-		Method:  "session/create",
-		ID:      c.nextID.Add(1),
-		Params:  struct{}{},
-	}); err != nil {
-		return fmt.Errorf("acp: session/create: %w", err)
+		return nil
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.apiBase = cfg.AgentAPIBase
+	c.apiKey = cfg.AgentAPIKey
+	c.model = cfg.AgentModel
+	c.httpClient = &http.Client{}
+	c.connected = true
 	return nil
 }
 
-// sendRequest marshals req as a single JSON line and writes it to the agent stdin.
-func (c *Client) sendRequest(req rpcRequest) error {
-	data, err := json.Marshal(req)
-	if err != nil {
-		return err
-	}
-	data = append(data, '\n')
-	_, err = c.stdin.Write(data)
-	return err
-}
-
-// SendPrompt sends a prompt/turn request and calls onToken for each streamed token.
-// Returns ErrNotConnected if the subprocess is not running.
-// Respects ctx cancellation between line reads.
+// SendPrompt sends a prompt and calls onToken for each streamed token.
+// Returns ErrNotConnected if Connect has not been called successfully.
+// Respects ctx cancellation.
 func (c *Client) SendPrompt(ctx context.Context, prompt string, onToken func(string)) error {
 	c.mu.Lock()
 	connected := c.connected
@@ -137,6 +103,97 @@ func (c *Client) SendPrompt(ctx context.Context, prompt string, onToken func(str
 		return ErrNotConnected
 	}
 
+	// Use legacy ACP/stdio path when pipes are injected (test mode).
+	if c.stdin != nil {
+		return c.sendPromptACP(ctx, prompt, onToken)
+	}
+
+	return c.sendPromptHTTP(ctx, prompt, onToken)
+}
+
+// sendPromptHTTP calls the OpenAI-compatible /chat/completions endpoint with
+// streaming and forwards each content token via onToken.
+func (c *Client) sendPromptHTTP(ctx context.Context, prompt string, onToken func(string)) error {
+	body := map[string]any{
+		"model": c.model,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"stream": true,
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("acp: marshal request: %w", err)
+	}
+
+	url := strings.TrimRight(c.apiBase, "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(data)))
+	if err != nil {
+		return fmt.Errorf("acp: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("acp: http request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("acp: unexpected status %d", resp.StatusCode)
+	}
+
+	type sseChunk struct {
+		Choices []struct {
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		if payload == "[DONE]" {
+			break
+		}
+
+		var chunk sseChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue // skip malformed chunks
+		}
+		if len(chunk.Choices) > 0 {
+			if tok := chunk.Choices[0].Delta.Content; tok != "" {
+				onToken(tok)
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("acp: read stream: %w", err)
+	}
+
+	return nil
+}
+
+// sendPromptACP is the legacy JSON-RPC over stdio path, used by tests.
+func (c *Client) sendPromptACP(ctx context.Context, prompt string, onToken func(string)) error {
 	reqID := c.nextID.Add(1)
 	if err := c.sendRequest(rpcRequest{
 		JSONRPC: "2.0",
@@ -153,17 +210,12 @@ func (c *Client) SendPrompt(ctx context.Context, prompt string, onToken func(str
 	}
 
 	for {
-		// Check context before issuing the next blocking read.
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		// Run the blocking read in a goroutine so context cancellation
-		// can interrupt it. The goroutine is intentionally leaked only when
-		// ctx is cancelled — it will exit as soon as the agent writes a line
-		// or closes stdout.
 		ch := make(chan readResult, 1)
 		go func() {
 			line, err := c.stdout.ReadString('\n')
@@ -207,8 +259,19 @@ func (c *Client) SendPrompt(ctx context.Context, prompt string, onToken func(str
 	return nil
 }
 
-// Close sends session/close and waits for the subprocess to exit.
-// If not connected, Close is a no-op.
+// sendRequest marshals req as a single JSON line and writes it to stdin.
+func (c *Client) sendRequest(req rpcRequest) error {
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	_, err = c.stdin.Write(data)
+	return err
+}
+
+// Close cleans up the client. In HTTP mode this is a no-op.
+// In ACP/stdio mode (tests) it closes the pipe and waits for any background goroutine.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	connected := c.connected
@@ -217,24 +280,17 @@ func (c *Client) Close() error {
 		return nil
 	}
 
-	// Best-effort: ignore send error since we're shutting down.
-	_ = c.sendRequest(rpcRequest{
-		JSONRPC: "2.0",
-		Method:  "session/close",
-		ID:      c.nextID.Add(1),
-		Params:  struct{}{},
-	})
-
 	c.mu.Lock()
 	c.connected = false
 	c.mu.Unlock()
-	_ = c.stdin.Close()
 
-	// Wait for the background goroutine's cmd.Wait() instead of calling
-	// Wait() a second time (double-Wait races and panics on some platforms).
-	if c.waitDone != nil {
-		<-c.waitDone
-		return c.waitErr
+	if c.stdin != nil {
+		_ = c.stdin.Close()
+		if c.waitDone != nil {
+			<-c.waitDone
+			return c.waitErr
+		}
 	}
+
 	return nil
 }
