@@ -354,11 +354,28 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	m.input = raw.(input.Model)
 	cmds = append(cmds, c)
 
-	raw2, c2 := m.vp.Update(msg)
-	m.vp = raw2.(viewportui.Model)
-	cmds = append(cmds, c2)
+	// Forward viewport navigation keys and all non-key messages to the viewport.
+	// Root-only keys (ctrl+c, ctrl+q, ctrl+f, y/n for quit confirm) are already
+	// handled and returned early above; what reaches here is either a non-key
+	// message or a key the viewport itself needs (up/down block navigation,
+	// ctrl+y copy, ctrl+r re-run, enter/esc/ctrl+d for AI cards).
+	if keyMsg, isKey := msg.(tea.KeyMsg); !isKey || isViewportKey(keyMsg) {
+		raw2, c2 := m.vp.Update(msg)
+		m.vp = raw2.(viewportui.Model)
+		cmds = append(cmds, c2)
+	}
 
 	return m, tea.Batch(cmds...)
+}
+
+// isViewportKey reports whether a key event should be forwarded to the viewport
+// component for block navigation and AI card interaction.
+func isViewportKey(msg tea.KeyMsg) bool {
+	switch msg.String() {
+	case "up", "down", "ctrl+y", "ctrl+r", "enter", "esc", "ctrl+d":
+		return true
+	}
+	return false
 }
 
 func (m rootModel) View() string {
