@@ -10,33 +10,40 @@ See [PRD.md](PRD.md) for full requirements and scope.
 
 | Requirement | Version |
 |-------------|---------|
-| Go | 1.23 or later |
+| Go | 1.24 or later |
 | Linux / macOS | — |
 | Windows | WSL 2 (native Windows binary is not supported in v1) |
 
 ---
 
-## Build
+## Development
+
+Clone the repo and run directly without compiling a binary — changes take effect on the next `go run`:
 
 ```sh
 git clone https://github.com/forge-tui/forge.git
 cd forge
-go build ./cmd/forge -o forge
+go run ./cmd/forge
+```
+
+---
+
+## Production build
+
+Compile an optimized binary and run it:
+
+```sh
+go build -o forge ./cmd/forge
+./forge
 ```
 
 The resulting `forge` binary has no runtime dependencies.
 
 ---
 
-## Run
-
-```sh
-./forge
-```
+## Connect an AI agent
 
 Forge looks for an agent config at `~/.config/forge/config.toml`. If none is found it starts in **shell-only mode** (see below).
-
-### Optional: connect an AI agent
 
 Create `~/.config/forge/config.toml`:
 
@@ -68,19 +75,28 @@ If no config file exists, or the agent endpoint is unreachable at startup, Forge
 | Key | Action |
 |-----|--------|
 | `Enter` | Execute command |
-| `↑ / ↓` or `j / k` | Focus previous / next block |
-| `f` | Fix with AI (failed block) |
-| `r` | Re-run focused block |
-| `y` | Copy focused block output |
-| `ctrl+c` | Kill running command |
+| `↑ / ↓` | Focus previous / next block |
+| `ctrl+f` | Fix with AI (failed block) |
+| `ctrl+r` | Re-run focused block |
+| `ctrl+y` | Copy focused block output |
+| `ctrl+c` | Kill running command / quit |
 | `ctrl+k` | Open command palette |
 | `Esc` | Dismiss AI card / close palette |
-| `q` | Quit |
+| `ctrl+q` | Quit (asks for confirmation if a command is running) |
 
 ---
 
 ## Tests
 
+Run all tests with the race detector:
+
 ```sh
 go test -race ./...
+```
+
+Run tests for a specific package:
+
+```sh
+go test -race ./internal/block/...
+go test -race ./cmd/forge/...
 ```
