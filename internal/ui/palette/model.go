@@ -49,11 +49,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { return messages.ClosePaletteMsg{} }
 		case tea.KeyEnter:
 			return m, m.selectCurrent()
-		case tea.KeyUp:
+		case tea.KeyUp, tea.KeyCtrlK:
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case tea.KeyDown:
+		case tea.KeyDown, tea.KeyCtrlJ:
 			if m.cursor < len(m.filtered)+len(builtins)-1 {
 				m.cursor++
 			}
@@ -65,20 +65,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case tea.KeyRunes:
 			if len(msg.Runes) > 0 {
-				switch string(msg.Runes) {
-				case "j":
-					if m.cursor < len(m.filtered)+len(builtins)-1 {
-						m.cursor++
-					}
-				case "k":
-					if m.cursor > 0 {
-						m.cursor--
-					}
-				default:
-					m.query += string(msg.Runes)
-					m.applyFilter()
-					m.cursor = 0
-				}
+				m.query += string(msg.Runes)
+				m.applyFilter()
+				m.cursor = 0
 			}
 		}
 	}
