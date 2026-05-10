@@ -49,11 +49,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { return messages.ClosePaletteMsg{} }
 		case tea.KeyEnter:
 			return m, m.selectCurrent()
-		case tea.KeyUp, tea.KeyCtrlK:
+		case tea.KeyUp:
 			if m.cursor > 0 {
 				m.cursor--
 			}
-		case tea.KeyDown, tea.KeyCtrlJ:
+		case tea.KeyDown:
 			if m.cursor < len(m.filtered)+len(builtins)-1 {
 				m.cursor++
 			}
