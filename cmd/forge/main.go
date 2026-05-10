@@ -136,7 +136,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m, tea.Quit
-		case "q":
+		case "ctrl+q":
 			if len(m.cancels) > 0 {
 				m.quitting = true
 				return m, nil
@@ -151,7 +151,12 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.quitting = false
 				return m, nil
 			}
-		case "f":
+		case "esc":
+			if m.quitting {
+				m.quitting = false
+				return m, nil
+			}
+		case "ctrl+f":
 			if m.shellOnly {
 				m.header.SetStatusHint("AI offline — add config: ~/.config/forge/config.toml")
 				return m, nil
@@ -216,7 +221,15 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.SubmitMsg:
 		m.paletteOpen = false
+		// /exit is a special built-in: exit Forge regardless of AI mode.
+		if strings.TrimSpace(msg.Input) == "/exit" {
+			return m, tea.Quit
+		}
 		if msg.IsAIPrompt {
+			if m.shellOnly {
+				m.header.SetStatusHint("AI offline — add config: ~/.config/forge/config.toml")
+				return m, nil
+			}
 			stripped := strings.TrimLeft(msg.Input, "/@")
 			b := block.Block{
 				Command:   msg.Input,
@@ -315,6 +328,15 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.ViewportClearMsg:
 		m.vp = viewportui.New()
+		// Re-apply current terminal dimensions so the fresh viewport renders
+		// correctly. Without this, width and height stay 0 and every subsequent
+		// AppendBlock produces an invisible block.
+		if m.termWidth > 0 && m.termHeight > 0 {
+			headerH := lipgloss.Height(m.header.View())
+			vpMsg := tea.WindowSizeMsg{Width: m.termWidth, Height: m.termHeight - headerH - 1}
+			raw, _ := m.vp.Update(vpMsg)
+			m.vp = raw.(viewportui.Model)
+		}
 		// Force a full terminal repaint to erase any residual screen content.
 		return m, tea.ClearScreen
 

@@ -171,7 +171,7 @@ func TestCommandPaletteOpensAndCloses(t *testing.T) {
 func TestQuitConfirmationWithRunningCommand(t *testing.T) {
 	m := newTestModel(t)
 	m, _ = submitShell(m, "sleep 10")
-	raw, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("q")})
+	raw, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ctrl+q")})
 	m = raw.(rootModel)
 	if !m.quitting {
 		t.Fatal("expected quitting == true after pressing q with running command")
