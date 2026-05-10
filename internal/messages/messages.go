@@ -35,7 +35,7 @@ type ACPDoneMsg struct {
 }
 
 // BlockFocusedMsg is emitted by the viewport when the user navigates
-// focus with arrow keys or j/k. An empty BlockID means no block is focused.
+// focus with arrow keys. An empty BlockID means no block is focused.
 type BlockFocusedMsg struct {
 	BlockID string
 }

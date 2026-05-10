@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/key"
 	bubblesviewport "github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -27,9 +28,15 @@ type Model struct {
 }
 
 // New returns a Model with no blocks, no focus, and autoScroll enabled.
+// j/k vim bindings are removed from the inner viewport; only arrow keys scroll.
 func New() Model {
+	vp := bubblesviewport.New(0, 0)
+	km := vp.KeyMap
+	km.Up = key.NewBinding(key.WithKeys("up"))
+	km.Down = key.NewBinding(key.WithKeys("down"))
+	vp.KeyMap = km
 	return Model{
-		vp:         bubblesviewport.New(0, 0),
+		vp:         vp,
 		focusedIdx: -1,
 		autoScroll: true,
 	}
@@ -55,7 +62,7 @@ func (m *Model) AppendBlock(b datablock.Block) {
 // Init satisfies tea.Model; this component has no startup commands.
 func (m Model) Init() tea.Cmd { return nil }
 
-// Update handles terminal resize, viewport scroll delegation, and j/k/arrow navigation.
+// Update handles terminal resize, viewport scroll delegation, and arrow key navigation.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
@@ -117,7 +124,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "j", "down":
+		case "down":
 			if m.focusedIdx < len(m.blocks)-1 {
 				m.focusedIdx++
 				if m.focusedIdx == len(m.blocks)-1 {
@@ -126,14 +133,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.vp.SetContent(m.renderBlocks())
 				cmds = append(cmds, emitBlockFocused(m.blockIDs[m.focusedIdx]))
 			}
-		case "k", "up":
+		case "up":
 			if m.focusedIdx > 0 {
 				m.focusedIdx--
 				m.autoScroll = false
 				m.vp.SetContent(m.renderBlocks())
 				cmds = append(cmds, emitBlockFocused(m.blockIDs[m.focusedIdx]))
 			}
-		case "y":
+		case "ctrl+y":
 			if m.focusedIdx >= 0 {
 				blk := m.blocks[m.focusedIdx].Block()
 				text := strings.Join(blk.Output, "\n")
@@ -143,7 +150,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusNotice = ""
 				}
 			}
-		case "r":
+		case "ctrl+r":
 			if m.focusedIdx >= 0 {
 				blk := m.blocks[m.focusedIdx].Block()
 				if blk.State != datablock.StateRunning {
@@ -153,7 +160,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					})
 				}
 			}
-		case "enter", "esc", "d":
+		case "enter", "esc", "ctrl+d":
 			if m.focusedIdx >= 0 {
 				blk := m.blocks[m.focusedIdx].Block()
 				if blk.AICard != nil && !blk.AICard.Dismissed && !blk.AICard.Streaming {

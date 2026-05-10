@@ -75,40 +75,40 @@ func TestFocusNavigation(t *testing.T) {
 		t.Fatalf("initial focusedIdx: want 2, got %d", m.FocusedIdx())
 	}
 
-	// k: 2 → 1
-	m, _ = pressKey(m, "k")
+	// up: 2 → 1
+	m, _ = pressKey(m, "up")
 	if m.FocusedIdx() != 1 {
-		t.Errorf("after first k: want 1, got %d", m.FocusedIdx())
+		t.Errorf("after first up: want 1, got %d", m.FocusedIdx())
 	}
 
-	// k: 1 → 0
-	m, _ = pressKey(m, "k")
+	// up: 1 → 0
+	m, _ = pressKey(m, "up")
 	if m.FocusedIdx() != 0 {
-		t.Errorf("after second k: want 0, got %d", m.FocusedIdx())
+		t.Errorf("after second up: want 0, got %d", m.FocusedIdx())
 	}
 
-	// k at 0: stays at 0
-	m, _ = pressKey(m, "k")
+	// up at 0: stays at 0
+	m, _ = pressKey(m, "up")
 	if m.FocusedIdx() != 0 {
-		t.Errorf("k at boundary: want 0, got %d", m.FocusedIdx())
+		t.Errorf("up at boundary: want 0, got %d", m.FocusedIdx())
 	}
 
-	// j: 0 → 1
-	m, _ = pressKey(m, "j")
+	// down: 0 → 1
+	m, _ = pressKey(m, "down")
 	if m.FocusedIdx() != 1 {
-		t.Errorf("after first j: want 1, got %d", m.FocusedIdx())
+		t.Errorf("after first down: want 1, got %d", m.FocusedIdx())
 	}
 
-	// j: 1 → 2
-	m, _ = pressKey(m, "j")
+	// down: 1 → 2
+	m, _ = pressKey(m, "down")
 	if m.FocusedIdx() != 2 {
-		t.Errorf("after second j: want 2, got %d", m.FocusedIdx())
+		t.Errorf("after second down: want 2, got %d", m.FocusedIdx())
 	}
 
-	// j at 2: stays at 2
-	m, _ = pressKey(m, "j")
+	// down at 2: stays at 2
+	m, _ = pressKey(m, "down")
 	if m.FocusedIdx() != 2 {
-		t.Errorf("j at boundary: want 2, got %d", m.FocusedIdx())
+		t.Errorf("down at boundary: want 2, got %d", m.FocusedIdx())
 	}
 }
 
@@ -116,8 +116,8 @@ func TestBlockFocusedMsgEmitted(t *testing.T) {
 	// 3 blocks with IDs 1, 2, 3; autoScroll leaves focusedIdx at 2 (ID=3)
 	m := makeModel(3)
 
-	// k moves focus from index 2 (ID=3) → index 1 (ID=2)
-	_, cmd := pressKey(m, "k")
+	// up moves focus from index 2 (ID=3) → index 1 (ID=2)
+	_, cmd := pressKey(m, "up")
 
 	bfm, ok := extractBlockFocusedMsg(cmd)
 	if !ok {
@@ -133,7 +133,7 @@ func TestAutoScroll(t *testing.T) {
 		m := makeModel(2) // focusedIdx=1, autoScroll=true
 
 		// navigate up → autoScroll=false, focusedIdx=0
-		m, _ = pressKey(m, "k")
+		m, _ = pressKey(m, "up")
 
 		m.AppendBlock(datablock.Block{ID: 3, Command: "cmd3", State: datablock.StateSuccess})
 
@@ -158,7 +158,7 @@ func TestAutoScroll(t *testing.T) {
 func TestCopyNoFocus(t *testing.T) {
 	m := New() // focusedIdx == -1, no blocks
 	// must not panic and must emit no SubmitMsg
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ctrl+y")})
 	m = updated.(Model)
 	if _, ok := extractSubmitMsg(cmd); ok {
 		t.Error("y with no focus: unexpected SubmitMsg emitted")
@@ -167,7 +167,7 @@ func TestCopyNoFocus(t *testing.T) {
 
 func TestRerunNoFocus(t *testing.T) {
 	m := New() // focusedIdx == -1, no blocks
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ctrl+r")})
 	m = updated.(Model)
 	if _, ok := extractSubmitMsg(cmd); ok {
 		t.Error("r with no focus: unexpected SubmitMsg emitted")
@@ -184,7 +184,7 @@ func TestRerunRunningBlock(t *testing.T) {
 		State:   datablock.StateRunning,
 	})
 	// focusedIdx == 0 (autoScroll), block is Running
-	_, cmd := pressKey(m, "r")
+	_, cmd := pressKey(m, "ctrl+r")
 	if _, ok := extractSubmitMsg(cmd); ok {
 		t.Error("r on StateRunning block: unexpected SubmitMsg emitted")
 	}
@@ -200,7 +200,7 @@ func TestRerunIdleBlock(t *testing.T) {
 		State:   datablock.StateSuccess,
 	})
 	// focusedIdx == 0
-	_, cmd := pressKey(m, "r")
+	_, cmd := pressKey(m, "ctrl+r")
 	sm, ok := extractSubmitMsg(cmd)
 	if !ok {
 		t.Fatal("r on StateSuccess block: expected SubmitMsg, got none")
@@ -226,6 +226,6 @@ func TestCopyGracefulOnUnavailable(t *testing.T) {
 		Output:  []string{"hello"},
 	})
 	// Must not panic; clipboard may or may not be available in CI.
-	updated, _ := pressKey(m, "y")
+	updated, _ := pressKey(m, "ctrl+y")
 	_ = updated // statusNotice is either "" or "clipboard unavailable" — both are valid
 }
