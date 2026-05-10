@@ -53,6 +53,6 @@ func defaults() *Config {
 	return &Config{
 		AgentAPIBase: "http://localhost:11434/v1",
 		AgentAPIKey:  "",
-		AgentModel:   "gemma4",
+		AgentModel:   "qwen3.6",
 	}
 }

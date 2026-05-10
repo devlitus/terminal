@@ -22,12 +22,9 @@ func TestSubmitShellCommand(t *testing.T) {
 	if got.Input != "git status" {
 		t.Errorf("Input = %q, want %q", got.Input, "git status")
 	}
-	if got.IsAIPrompt {
-		t.Error("IsAIPrompt = true, want false")
-	}
 }
 
-func TestSubmitAIPrompt(t *testing.T) {
+func TestSubmitWithSlashPrefix(t *testing.T) {
 	m := New()
 	m.textinput.SetValue("/fix my code")
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -41,9 +38,6 @@ func TestSubmitAIPrompt(t *testing.T) {
 	}
 	if got.Input != "/fix my code" {
 		t.Errorf("Input = %q, want %q", got.Input, "/fix my code")
-	}
-	if !got.IsAIPrompt {
-		t.Error("IsAIPrompt = false, want true")
 	}
 }
 

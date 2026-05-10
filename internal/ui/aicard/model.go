@@ -6,7 +6,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	datablock "github.com/forge-tui/forge/internal/block"
-	"github.com/forge-tui/forge/internal/messages"
 	"github.com/forge-tui/forge/internal/theme"
 )
 
@@ -47,21 +46,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 	case tea.KeyMsg:
-		if m.card.Streaming {
-			break
-		}
-		switch msg.Type {
-		case tea.KeyEnter:
-			return m, func() tea.Msg {
-				return messages.AcceptAIMsg{Command: lastNonEmptyLine(m.card.Tokens)}
-			}
-		case tea.KeyEsc:
-			return m, func() tea.Msg { return messages.DismissAIMsg{} }
-		case tea.KeyRunes:
-			if len(msg.Runes) > 0 && msg.Runes[0] == 'd' {
-				return m, func() tea.Msg { return messages.DismissAIMsg{} }
-			}
-		}
 	}
 	return m, nil
 }
@@ -81,8 +65,7 @@ func (m Model) View() string {
 	if m.card.Streaming {
 		content = tokenText + "▋"
 	} else {
-		hints := theme.MutedText.Render("[Enter] Run  [Esc] Dismiss")
-		content = tokenText + "\n" + hints
+		content = tokenText
 	}
 
 	body := bodyStyle.Render(content)

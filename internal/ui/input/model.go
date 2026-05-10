@@ -15,17 +15,33 @@ import (
 type Model struct {
 	textinput textinput.Model
 	width     int
+	shellMode bool
 }
 
 func New() Model {
 	ti := textinput.New()
-	ti.Placeholder = "type a command or /prompt for AI…"
 	ti.PlaceholderStyle = lipgloss.NewStyle().Foreground(theme.Ink6)
 	ti.TextStyle = lipgloss.NewStyle().Foreground(theme.Ink9)
-	ti.Prompt = "❯ "
-	ti.PromptStyle = lipgloss.NewStyle().Foreground(theme.Ember500)
 	ti.Focus()
-	return Model{textinput: ti}
+	m := Model{textinput: ti}
+	m.SetShellMode(false)
+	return m
+}
+
+// SetShellMode switches the input bar between chat mode (shellMode=false) and
+// shell mode (shellMode=true), updating the placeholder, prompt symbol, and
+// prompt color accordingly.
+func (m *Model) SetShellMode(v bool) {
+	m.shellMode = v
+	if v {
+		m.textinput.Placeholder = "type a command…"
+		m.textinput.Prompt = "❯ "
+		m.textinput.PromptStyle = lipgloss.NewStyle().Foreground(theme.Ember500)
+	} else {
+		m.textinput.Placeholder = "ask AI anything…"
+		m.textinput.Prompt = "⬡ "
+		m.textinput.PromptStyle = lipgloss.NewStyle().Foreground(theme.Plasma500)
+	}
 }
 
 func (m Model) Init() tea.Cmd { return textinput.Blink }
@@ -43,9 +59,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if v == "clear" || strings.EqualFold(v, "cls") {
 				return m, func() tea.Msg { return messages.ViewportClearMsg{} }
 			}
-			isAI := strings.HasPrefix(v, "/") || strings.HasPrefix(v, "@")
 			return m, func() tea.Msg {
-				return messages.SubmitMsg{Input: v, IsAIPrompt: isAI}
+				return messages.SubmitMsg{Input: v}
 			}
 		case tea.KeyCtrlK:
 			return m, func() tea.Msg { return messages.OpenPaletteMsg{} }

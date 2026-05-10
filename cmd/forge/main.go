@@ -39,6 +39,7 @@ type rootModel struct {
 	acpClient   *acp.Client
 	cfg         *config.Config
 	shellOnly   bool
+	shellMode   bool
 	quitting    bool
 }
 
@@ -221,42 +222,38 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case messages.SubmitMsg:
 		m.paletteOpen = false
-		// /exit is a special built-in: exit Forge regardless of AI mode.
-		if strings.TrimSpace(msg.Input) == "/exit" {
+		inputText := strings.TrimSpace(msg.Input)
+
+		// Built-in: /exit works in any mode.
+		if inputText == "/exit" {
 			return m, tea.Quit
 		}
-		if msg.IsAIPrompt {
-			if m.shellOnly {
-				m.header.SetStatusHint("AI offline — add config: ~/.config/forge/config.toml")
+
+		// "!" alone → toggle between chat mode and shell mode.
+		if inputText == "!" {
+			m.shellMode = !m.shellMode
+			m.input.SetShellMode(m.shellMode)
+			return m, nil
+		}
+
+		// "!command" → enter shell mode and execute the command.
+		if strings.HasPrefix(inputText, "!") {
+			cmd := strings.TrimSpace(inputText[1:])
+			if !m.shellMode {
+				m.shellMode = true
+				m.input.SetShellMode(true)
+			}
+			if cmd == "" {
 				return m, nil
 			}
-			stripped := strings.TrimLeft(msg.Input, "/@")
-			b := block.Block{
-				Command:   msg.Input,
-				Dir:       m.session.Cwd,
-				State:     block.StateSuccess,
-				StartedAt: time.Now(),
-			}
-			b = m.rb.Add(b)
-			m.vp.AppendBlock(b)
-			blockID := fmt.Sprintf("%d", b.ID)
-			m.vp.InitAICard(blockID)
-			return m, startACPStream(program, m.acpClient, blockID, stripped)
-		}
-		if !msg.IsAIPrompt {
-			handled, sessionCmd := m.session.Handle(msg.Input)
+			handled, sessionCmd := m.session.Handle(cmd)
 			if handled {
 				if sessionCmd != nil {
 					cmds = append(cmds, sessionCmd)
 				}
 				return m, tea.Batch(cmds...)
 			}
-			b := block.Block{
-				Command:   msg.Input,
-				Dir:       m.session.Cwd,
-				State:     block.StateRunning,
-				StartedAt: time.Now(),
-			}
+			b := block.Block{Command: cmd, Dir: m.session.Cwd, State: block.StateRunning, StartedAt: time.Now()}
 			b = m.rb.Add(b)
 			m.vp.AppendBlock(b)
 			blockID := fmt.Sprintf("%d", b.ID)
@@ -264,6 +261,53 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancels[blockID] = cancel
 			return m, forgeExec.Start(program, blockID, b.Command, b.Dir, ctx)
 		}
+
+		// In shell mode: "/" or "@" prefix → switch to chat mode and send AI prompt.
+		if m.shellMode && (strings.HasPrefix(inputText, "/") || strings.HasPrefix(inputText, "@")) {
+			m.shellMode = false
+			m.input.SetShellMode(false)
+			if m.shellOnly {
+				m.header.SetStatusHint("AI offline — add config: ~/.config/forge/config.toml")
+				return m, nil
+			}
+			stripped := strings.TrimLeft(inputText, "/@")
+			b := block.Block{Command: inputText, Dir: m.session.Cwd, State: block.StateSuccess, StartedAt: time.Now()}
+			b = m.rb.Add(b)
+			m.vp.AppendBlock(b)
+			blockID := fmt.Sprintf("%d", b.ID)
+			m.vp.InitAICard(blockID)
+			return m, startACPStream(program, m.acpClient, blockID, stripped)
+		}
+
+		// In shell mode: plain text → execute as shell command.
+		if m.shellMode {
+			handled, sessionCmd := m.session.Handle(inputText)
+			if handled {
+				if sessionCmd != nil {
+					cmds = append(cmds, sessionCmd)
+				}
+				return m, tea.Batch(cmds...)
+			}
+			b := block.Block{Command: inputText, Dir: m.session.Cwd, State: block.StateRunning, StartedAt: time.Now()}
+			b = m.rb.Add(b)
+			m.vp.AppendBlock(b)
+			blockID := fmt.Sprintf("%d", b.ID)
+			ctx, cancel := context.WithCancel(context.Background())
+			m.cancels[blockID] = cancel
+			return m, forgeExec.Start(program, blockID, b.Command, b.Dir, ctx)
+		}
+
+		// In chat mode: plain text → send as AI prompt.
+		if m.shellOnly {
+			m.header.SetStatusHint("AI offline — add config: ~/.config/forge/config.toml")
+			return m, nil
+		}
+		b := block.Block{Command: inputText, Dir: m.session.Cwd, State: block.StateSuccess, StartedAt: time.Now()}
+		b = m.rb.Add(b)
+		m.vp.AppendBlock(b)
+		blockID := fmt.Sprintf("%d", b.ID)
+		m.vp.InitAICard(blockID)
+		return m, startACPStream(program, m.acpClient, blockID, inputText)
 
 	case messages.ExecOutputMsg:
 		raw, c := m.vp.Update(msg)
