@@ -57,10 +57,10 @@ type Client struct {
 	httpClient *http.Client
 
 	// Legacy ACP/stdio fields — used only by tests that inject pipes directly.
-	stdin    io.WriteCloser
-	stdout   *bufio.Reader
-	nextID   atomic.Int64
-	mu       sync.Mutex
+	stdin     io.WriteCloser
+	stdout    *bufio.Reader
+	nextID    atomic.Int64
+	mu        sync.Mutex
 	connected bool
 	waitDone  chan struct{}
 	waitErr   error
@@ -268,6 +268,161 @@ func (c *Client) sendRequest(req rpcRequest) error {
 	data = append(data, '\n')
 	_, err = c.stdin.Write(data)
 	return err
+}
+
+// Model returns the configured model name.
+func (c *Client) Model() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.model
+}
+
+// Chat sends a multi-turn conversation with optional tool definitions.
+// Streamed content tokens are forwarded via onToken.
+// Returns any tool calls requested by the model (nil if the model replied with content).
+// Only works in HTTP mode; returns ErrNotConnected otherwise.
+func (c *Client) Chat(ctx context.Context, msgs []Message, tools []ToolDef, onToken func(string)) ([]ToolCall, error) {
+	c.mu.Lock()
+	connected := c.connected
+	c.mu.Unlock()
+	if !connected {
+		return nil, ErrNotConnected
+	}
+
+	body := map[string]any{
+		"model":    c.model,
+		"messages": msgs,
+		"stream":   true,
+	}
+	if len(tools) > 0 {
+		body["tools"] = tools
+	}
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("acp: marshal chat request: %w", err)
+	}
+
+	url := strings.TrimRight(c.apiBase, "/") + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(data)))
+	if err != nil {
+		return nil, fmt.Errorf("acp: build chat request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("acp: http chat request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("acp: unexpected status %d", resp.StatusCode)
+	}
+
+	type tcDelta struct {
+		Index    int    `json:"index"`
+		ID       string `json:"id"`
+		Type     string `json:"type"`
+		Function struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		} `json:"function"`
+	}
+	type sseChunk struct {
+		Choices []struct {
+			Delta struct {
+				Content   string    `json:"content"`
+				ToolCalls []tcDelta `json:"tool_calls"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+
+	// Accumulate tool calls by index; content tokens are streamed immediately.
+	tcMap := map[int]*ToolCall{}
+
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimPrefix(line, "data: ")
+		if payload == "[DONE]" {
+			break
+		}
+
+		var chunk sseChunk
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			continue
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		delta := chunk.Choices[0].Delta
+
+		// Accumulate tool call deltas by index.
+		for _, tc := range delta.ToolCalls {
+			existing, ok := tcMap[tc.Index]
+			if !ok {
+				tcMap[tc.Index] = &ToolCall{
+					ID:   tc.ID,
+					Type: tc.Type,
+					Function: ToolCallFunction{
+						Name:      tc.Function.Name,
+						Arguments: tc.Function.Arguments,
+					},
+				}
+			} else {
+				if tc.ID != "" {
+					existing.ID = tc.ID
+				}
+				if tc.Type != "" {
+					existing.Type = tc.Type
+				}
+				if tc.Function.Name != "" {
+					existing.Function.Name = tc.Function.Name
+				}
+				existing.Function.Arguments += tc.Function.Arguments
+			}
+		}
+
+		// Stream content tokens.
+		if tok := delta.Content; tok != "" {
+			onToken(tok)
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("acp: read chat stream: %w", err)
+	}
+
+	if len(tcMap) == 0 {
+		return nil, nil
+	}
+
+	// Flatten tool calls in order of index.
+	result := make([]ToolCall, len(tcMap))
+	for idx, tc := range tcMap {
+		if idx < len(result) {
+			result[idx] = *tc
+		}
+	}
+	return result, nil
 }
 
 // Close cleans up the client. In HTTP mode this is a no-op.

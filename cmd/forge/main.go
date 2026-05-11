@@ -10,6 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/forge-tui/forge/internal/acp"
+	agentpkg "github.com/forge-tui/forge/internal/agent"
 	"github.com/forge-tui/forge/internal/block"
 	"github.com/forge-tui/forge/internal/config"
 	forgeExec "github.com/forge-tui/forge/internal/exec"
@@ -26,21 +27,22 @@ import (
 var program *tea.Program
 
 type rootModel struct {
-	header      header.Model
-	input       input.Model
-	vp          viewportui.Model
-	rb          *block.RingBuffer
-	cancels     map[string]context.CancelFunc
-	session     *session.Session
-	termWidth   int
-	termHeight  int
-	paletteOpen bool
-	palette     paletteui.Model
-	acpClient   *acp.Client
-	cfg         *config.Config
-	shellOnly   bool
-	shellMode   bool
-	quitting    bool
+	header         header.Model
+	input          input.Model
+	vp             viewportui.Model
+	rb             *block.RingBuffer
+	cancels        map[string]context.CancelFunc
+	session        *session.Session
+	termWidth      int
+	termHeight     int
+	paletteOpen    bool
+	palette        paletteui.Model
+	agent          *agentpkg.Agent
+	cfg            *config.Config
+	shellOnly      bool
+	shellMode      bool
+	quitting       bool
+	confirmPending *messages.AgentConfirmMsg
 }
 
 func newRootModel() rootModel {
@@ -57,6 +59,20 @@ func newRootModel() rootModel {
 			shellOnly = true
 		}
 	}
+
+	// confirmFn blocks the agent goroutine until the user presses y/n.
+	// It sends AgentConfirmMsg to the program and waits on the reply channel.
+	confirmFn := func(command string) bool {
+		reply := make(chan bool, 1)
+		program.Send(messages.AgentConfirmMsg{
+			Command: command,
+			Reply:   reply,
+		})
+		return <-reply
+	}
+
+	ag := agentpkg.New(client, func() string { return sess.Cwd }, confirmFn)
+
 	inp := input.New()
 	m := rootModel{
 		header:    header.New(sess.Cwd),
@@ -65,7 +81,7 @@ func newRootModel() rootModel {
 		rb:        rb,
 		cancels:   make(map[string]context.CancelFunc),
 		session:   sess,
-		acpClient: client,
+		agent:     ag,
 		cfg:       cfg,
 		shellOnly: shellOnly,
 	}
@@ -73,18 +89,6 @@ func newRootModel() rootModel {
 		m.header.SetStatusHint("AI offline — add config: ~/.config/forge/config.toml")
 	}
 	return m
-}
-
-// startACPStream returns a tea.Cmd that streams an ACP prompt in a goroutine,
-// sending ACPTokenMsg for each token and ACPDoneMsg when finished.
-func startACPStream(p *tea.Program, client *acp.Client, blockID, prompt string) tea.Cmd {
-	return func() tea.Msg {
-		ctx := context.Background()
-		err := client.SendPrompt(ctx, prompt, func(token string) {
-			p.Send(messages.ACPTokenMsg{BlockID: blockID, Token: token})
-		})
-		return messages.ACPDoneMsg{BlockID: blockID, Err: err}
-	}
 }
 
 func (m rootModel) Init() tea.Cmd {
@@ -144,15 +148,30 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, tea.Quit
 		case "y":
+			if m.confirmPending != nil {
+				m.confirmPending.Reply <- true
+				m.confirmPending = nil
+				return m, nil
+			}
 			if m.quitting {
 				return m, tea.Quit
 			}
 		case "n":
+			if m.confirmPending != nil {
+				m.confirmPending.Reply <- false
+				m.confirmPending = nil
+				return m, nil
+			}
 			if m.quitting {
 				m.quitting = false
 				return m, nil
 			}
 		case "esc":
+			if m.confirmPending != nil {
+				m.confirmPending.Reply <- false
+				m.confirmPending = nil
+				return m, nil
+			}
 			if m.quitting {
 				m.quitting = false
 				return m, nil
@@ -173,7 +192,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					prompt := fmt.Sprintf("Command: %s\nError output:\n%s\nFix this command.",
 						focused.Command, strings.Join(last20, "\n"))
 					m.vp.InitAICard(blockID)
-					return m, startACPStream(program, m.acpClient, blockID, prompt)
+					return m, m.agent.Send(program, blockID, prompt)
 				}
 			}
 		}
@@ -198,6 +217,10 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.paletteOpen = false
 		return m, nil
 
+	case messages.AgentConfirmMsg:
+		m.confirmPending = &msg
+		return m, nil
+
 	case messages.FixWithAIMsg:
 		m.paletteOpen = false
 		if m.shellOnly {
@@ -212,10 +235,10 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(last20) > 20 {
 					last20 = last20[len(last20)-20:]
 				}
-				prompt := fmt.Sprintf("Command: %s\nError output:\n%s\nFix this command.",
+				promptText := fmt.Sprintf("Command: %s\nError output:\n%s\nFix this command.",
 					focused.Command, strings.Join(last20, "\n"))
 				m.vp.InitAICard(blockID)
-				return m, startACPStream(program, m.acpClient, blockID, prompt)
+				return m, m.agent.Send(program, blockID, promptText)
 			}
 		}
 		return m, nil
@@ -227,6 +250,14 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Built-in: /exit works in any mode.
 		if inputText == "/exit" {
 			return m, tea.Quit
+		}
+
+		// Session builtins (clear, cd, …) are handled before mode routing.
+		if handled, sessionCmd := m.session.Handle(inputText); handled {
+			if sessionCmd != nil {
+				cmds = append(cmds, sessionCmd)
+			}
+			return m, tea.Batch(cmds...)
 		}
 
 		// "!" alone → toggle between chat mode and shell mode.
@@ -246,8 +277,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if cmd == "" {
 				return m, nil
 			}
-			handled, sessionCmd := m.session.Handle(cmd)
-			if handled {
+			if handled, sessionCmd := m.session.Handle(cmd); handled {
 				if sessionCmd != nil {
 					cmds = append(cmds, sessionCmd)
 				}
@@ -276,7 +306,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.AppendBlock(b)
 			blockID := fmt.Sprintf("%d", b.ID)
 			m.vp.InitAICard(blockID)
-			return m, startACPStream(program, m.acpClient, blockID, stripped)
+			return m, m.agent.Send(program, blockID, stripped)
 		}
 
 		// In shell mode: plain text → execute as shell command.
@@ -307,7 +337,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.vp.AppendBlock(b)
 		blockID := fmt.Sprintf("%d", b.ID)
 		m.vp.InitAICard(blockID)
-		return m, startACPStream(program, m.acpClient, blockID, inputText)
+		return m, m.agent.Send(program, blockID, inputText)
 
 	case messages.ExecOutputMsg:
 		raw, c := m.vp.Update(msg)
@@ -371,6 +401,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, c
 
 	case messages.ViewportClearMsg:
+		m.agent.Reset()
 		m.vp = viewportui.New()
 		// Re-apply current terminal dimensions so the fresh viewport renders
 		// correctly. Without this, width and height stay 0 and every subsequent
@@ -428,7 +459,12 @@ func (m rootModel) View() string {
 		return lipgloss.Place(m.termWidth, m.termHeight, lipgloss.Center, lipgloss.Center, overlay)
 	}
 	inputView := m.input.View()
-	if m.quitting {
+	switch {
+	case m.confirmPending != nil:
+		inputView = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#eab308")).
+			Render(fmt.Sprintf("Run: %s  (y/n)", m.confirmPending.Command))
+	case m.quitting:
 		inputView = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#eab308")).
 			Render("Quit? (y/n)")

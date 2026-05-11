@@ -22,6 +22,11 @@ func newTestModel(t *testing.T) rootModel {
 // submitShell drives a shell SubmitMsg into the model and returns the model
 // plus the blockID of the new block. Does NOT run the returned exec cmd.
 func submitShell(m rootModel, cmd string) (rootModel, string) {
+	// Ensure shell mode so the command is routed as a shell command.
+	if !m.shellMode {
+		m.shellMode = true
+		m.input.SetShellMode(true)
+	}
 	raw, _ := m.Update(messages.SubmitMsg{Input: cmd})
 	m = raw.(rootModel)
 	all := m.rb.All()

@@ -16,6 +16,7 @@
 6. [Concurrency Model](#6-concurrency-model)
 7. [Layout Zones](#7-layout-zones)
 8. [Trade-offs / ADRs](#8-trade-offs--adrs)
+9. [Agent System (Agentic Loop + Tool Calls)](#9-agent-system-agentic-loop--tool-calls)
 
 ---
 
@@ -548,3 +549,326 @@ FR-06 states "blocks scroll vertically; the viewport shows the most recent N blo
 - (+) Satisfies NFR-03 (no memory leaks over 1 hour).
 - (−) Commands from more than 500 executions ago are lost. Mitigated by the fact that shell history is handled by the user's shell independently of Forge.
 - (−) Users running very short commands rapidly (e.g., benchmarking scripts) will see older blocks disappear. This is the expected trade-off and is documented behaviour.
+
+---
+
+## 9. Agent System (Agentic Loop + Tool Calls)
+
+> **Status:** Design · May 2026  
+> This section specifies the architecture for evolving the current single-turn ACP client into a stateful, tool-calling agent. It is the canonical reference for the implementation task.
+
+### 9.1 Problem Statement
+
+The current `acp.Client.SendPrompt` sends a single user message with no history, no system prompt, and no tool definitions. The model cannot take actions, only generate text. To be useful in a terminal context the agent must be able to:
+
+1. Maintain conversation context across turns (multi-turn history).
+2. Invoke tools (shell commands, file reads, directory listings) autonomously.
+3. Continue reasoning after each tool result until it produces a final answer (the agentic loop).
+
+### 9.2 Package Structure
+
+No existing package is rewritten. The changes are purely additive, except for two small extensions to existing files.
+
+```
+internal/
+  acp/
+    client.go    — EXTEND: add Chat() method alongside existing SendPrompt
+    types.go     — NEW: OpenAI-compatible wire types (Message, ToolCall, ToolDef, …)
+  agent/
+    agent.go     — NEW: Agent struct, Send(), Reset()
+    tools.go     — NEW: Tool type + 4 MVP tool implementations
+    prompt.go    — NEW: system prompt builder
+  messages/
+    messages.go  — EXTEND: add AgentToolCallMsg and AgentToolResultMsg
+```
+
+**Why a new `internal/agent/` package instead of extending `internal/acp/`?**
+
+`acp` is a transport layer: it speaks HTTP to an OpenAI-compatible endpoint. Conversation history, system prompts, tool dispatch, and the retry loop are orchestration concerns — they belong one layer above the transport. Mixing them into `acp` would make that package own two very different responsibilities, violating the single-responsibility principle and making the existing tests harder to maintain.
+
+`agent` imports `acp`; `acp` does not import `agent`. No circular dependency.
+
+### 9.3 Wire Types (`internal/acp/types.go`)
+
+These are the OpenAI API JSON shapes. They belong in `acp` because `acp.Client.Chat()` uses them directly in the HTTP request/response, and `agent` imports `acp` to reference them. Defining them here avoids a shared "types" package while keeping `acp` free from agent logic.
+
+```go
+// Message is one entry in the OpenAI messages array.
+// Role is one of: "system" | "user" | "assistant" | "tool".
+type Message struct {
+    Role       string     `json:"role"`
+    Content    string     `json:"content,omitempty"`
+    ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // set by assistant turns
+    ToolCallID string     `json:"tool_call_id,omitempty"` // set on role="tool" turns
+    Name       string     `json:"name,omitempty"`         // tool name on role="tool"
+}
+
+// ToolCall is a single function invocation requested by the model.
+type ToolCall struct {
+    ID       string           `json:"id"`
+    Type     string           `json:"type"` // always "function"
+    Function ToolCallFunction `json:"function"`
+}
+
+type ToolCallFunction struct {
+    Name      string `json:"name"`
+    Arguments string `json:"arguments"` // JSON-encoded object; parsed by the tool
+}
+
+// ToolDef is the schema sent to the model to advertise an available function.
+type ToolDef struct {
+    Type     string      `json:"type"` // always "function"
+    Function FunctionDef `json:"function"`
+}
+
+type FunctionDef struct {
+    Name        string          `json:"name"`
+    Description string          `json:"description"`
+    Parameters  json.RawMessage `json:"parameters"` // JSON Schema object
+}
+
+// ChatRequest is the full body of a POST /chat/completions call.
+type ChatRequest struct {
+    Model    string    `json:"model"`
+    Messages []Message `json:"messages"`
+    Tools    []ToolDef `json:"tools,omitempty"`
+    Stream   bool      `json:"stream"`
+}
+
+// ChatResponse is the assembled result of one Chat() call.
+// Content holds streamed text (may be empty if the model only produced tool calls).
+// ToolCalls holds any function invocations the model requested.
+type ChatResponse struct {
+    Content   string
+    ToolCalls []ToolCall
+}
+```
+
+### 9.4 `acp.Client` Extension
+
+One new method is added to `acp.Client`. `SendPrompt` is preserved unchanged for backward compatibility with existing tests.
+
+```go
+// Chat sends req to the OpenAI-compatible /chat/completions endpoint.
+// onToken is called for each streamed content delta (may not be called at all
+// if the model produces only tool calls). Chat blocks until the stream ends.
+// The returned ChatResponse is assembled from the full stream.
+func (c *Client) Chat(ctx context.Context, req ChatRequest, onToken func(string)) (*ChatResponse, error)
+
+// Model returns the configured model name (needed by agent to build ChatRequest).
+func (c *Client) Model() string
+```
+
+`Chat` shares the SSE parsing logic with `sendPromptHTTP`; the delta struct is extended to also capture `tool_calls` deltas per the OpenAI streaming format. Tool call deltas are accumulated and assembled into `ChatResponse.ToolCalls` after the stream ends.
+
+### 9.5 Tool Layer (`internal/agent/tools.go`)
+
+```go
+// Tool pairs an OpenAI ToolDef (the schema sent to the model) with a Go
+// function that executes when the model requests this tool.
+type Tool struct {
+    Def     acp.ToolDef
+    Execute func(ctx context.Context, args json.RawMessage) (string, error)
+}
+```
+
+**MVP tool set — exactly four tools:**
+
+| Tool name | Description | Uses |
+|-----------|-------------|------|
+| `run_command` | Execute a shell command in the current working directory; return combined stdout+stderr | `internal/exec.Run` |
+| `read_file` | Read a file's contents given an absolute or CWD-relative path | `os.ReadFile` + path sanitisation |
+| `list_dir` | List files and directories at a path (names + is-dir flag) | `os.ReadDir` |
+| `get_cwd` | Return the current working directory (no arguments) | `cwd()` getter |
+
+**Why these four?** They cover the essential terminal-AI use cases (run → observe → fix loop) without adding surface area that is hard to audit. Tool calls run as the user's OS process — there is no sandbox. Keeping the set minimal reduces the blast radius of a misbehaving model.
+
+**Security note on `run_command`:** The tool executes whatever command string the model produces. There is no allowlist. This is an explicit trust-in-the-local-model decision (the user controls Ollama). A follow-up hardening task should add a confirmation step for patterns matching `rm -rf`, `git push --force`, `sudo`, and pipe-to-shell idioms (`curl … | sh`). This is documented as a known risk, not overlooked.
+
+**`read_file` path handling:** The path is normalised with `filepath.Clean` and resolved relative to CWD if not absolute. There is no restriction preventing traversal (e.g., `../../etc/passwd`) because the local model context makes this a non-threat for the v1 use case. If Forge ever gains remote-agent support this must be revisited.
+
+### 9.6 Agent (`internal/agent/agent.go`)
+
+```go
+// Agent owns conversation history for one session and runs the agentic loop.
+// It is safe for concurrent use; the loop goroutine and potential future
+// callers serialise via mu.
+type Agent struct {
+    history []acp.Message   // grows each turn; never persisted to disk
+    tools   []Tool
+    client  *acp.Client
+    cwd     func() string   // live getter — returns session.Session.Cwd at call time
+    mu      sync.Mutex
+}
+
+// New constructs an Agent with the four MVP tools pre-registered.
+func New(client *acp.Client, cwd func() string) *Agent
+
+// Send starts the agentic loop for userInput as a tea.Cmd.
+// The returned cmd runs in a goroutine. It emits intermediate messages via
+// p.Send() and returns ACPDoneMsg as its final tea.Msg when the loop ends.
+func (a *Agent) Send(p *tea.Program, blockID, userInput string) tea.Cmd
+
+// Reset clears conversation history. Called when the user runs `clear`.
+func (a *Agent) Reset()
+```
+
+`history` is a flat `[]acp.Message`. A system message is prepended on every `Chat` call (not stored in history) so that the system prompt always reflects the current CWD.
+
+### 9.7 System Prompt (`internal/agent/prompt.go`)
+
+```go
+func buildSystemPrompt(cwd, shell string) string
+```
+
+Content:
+
+```
+You are Forge, an AI assistant embedded in a terminal application.
+You help developers run commands, navigate the filesystem, read code, and debug problems.
+
+Current working directory: {cwd}
+Shell: {shell}
+
+Guidelines:
+- When the user asks you to do something, call the appropriate tool directly. Do not describe what you would do — do it.
+- Keep prose responses short. Developers read output, not essays.
+- Before running a destructive command (rm, git reset --hard, git push --force, anything with sudo), explain what it does and ask for confirmation.
+- When a command produces long output, summarise it; do not echo thousands of lines verbatim.
+- Prefer non-interactive command variants (--no-pager, --no-edit, -y flags where safe).
+```
+
+CWD is injected at every request (not stored in history) so it reflects `cd` changes without needing a special update path.
+
+### 9.8 New Bubble Tea Message Types
+
+Two new types are added to `internal/messages/messages.go`:
+
+```go
+// AgentToolCallMsg is emitted when the agent begins executing a tool call
+// requested by the model. Used to update the AI card with a status line.
+type AgentToolCallMsg struct {
+    BlockID  string
+    ToolName string
+    Args     string // raw JSON arguments, for display only
+}
+
+// AgentToolResultMsg is emitted when a tool call completes.
+// Err is non-nil if the tool itself failed (distinct from the model failing).
+type AgentToolResultMsg struct {
+    BlockID  string
+    ToolName string
+    Result   string
+    Err      error
+}
+```
+
+The root model and viewport forward these to the AI card. The AI card renders a compact status line (e.g., `⚙ run_command: go build ./...`) while the tool is running, replaced by the result summary when done. This is additive — no existing message handling changes.
+
+### 9.9 Agentic Loop Flow
+
+```
+Agent.Send(p, blockID, userInput) returns tea.Cmd
+  │
+  └── goroutine starts
+        │
+        ├─ append {role:user, content:userInput} to history
+        │
+        ├─ LOOP ──────────────────────────────────────────────────────────┐
+        │    │                                                             │
+        │    ├─ build messages = [systemMsg()] + history                  │
+        │    ├─ call client.Chat(ctx, req, onToken)                       │
+        │    │       onToken → p.Send(ACPTokenMsg{...})  [0..N times]     │
+        │    │                                                             │
+        │    ├─ if err → return ACPDoneMsg{Err: err}                      │
+        │    │                                                             │
+        │    ├─ if resp.ToolCalls == nil:                                  │
+        │    │       append {role:assistant, content} to history           │
+        │    │       return ACPDoneMsg{BlockID}          ← LOOP EXIT       │
+        │    │                                                             │
+        │    └─ else (model requested tools):                              │
+        │            append {role:assistant, toolCalls} to history        │
+        │            for each tool call (sequential):                     │
+        │              p.Send(AgentToolCallMsg{...})                      │
+        │              result, err = tool.Execute(ctx, args)              │
+        │              p.Send(AgentToolResultMsg{...})                    │
+        │              append {role:tool, result} to history              │
+        │            continue LOOP ────────────────────────────────────────┘
+```
+
+**Why sequential tool execution?** Parallel tool execution requires synchronising partial history writes and complicates context cancellation. At this scale (one developer, one local model) the latency benefit is negligible — model latency dominates over filesystem ops. Sequential is correct, simple, and debuggable. Parallelism is a named future optimisation, not an oversight.
+
+**Context cancellation:** The goroutine checks `ctx.Done()` between tool calls. If the user presses `ctrl+c`, the cancel propagates to both `client.Chat` (via the HTTP request context) and any in-flight `exec.Run` inside a tool.
+
+**Loop termination:** The loop terminates when either: (a) the model returns a response with no tool calls, (b) `ctx` is cancelled, or (c) `client.Chat` returns an error. There is no explicit turn limit in the MVP. A hard limit (e.g., 10 turns) is a named follow-up to prevent runaway loops.
+
+### 9.10 Changes to Existing Files
+
+| File | Change |
+|------|--------|
+| `internal/acp/client.go` | Add `Chat(ctx, req, onToken)` and `Model() string` methods |
+| `internal/acp/types.go` | **New file**: OpenAI wire types (§9.3) |
+| `internal/messages/messages.go` | Add `AgentToolCallMsg` and `AgentToolResultMsg` |
+| `cmd/forge/main.go` | Replace `*acp.Client` field with `*agent.Agent`; replace `startACPStream(...)` calls with `agent.Send(program, blockID, input)` |
+| `internal/ui/aicard/model.go` | Handle `AgentToolCallMsg` and `AgentToolResultMsg` to render tool status lines |
+
+`internal/exec`, `internal/session`, `internal/ui/viewport`, `internal/ui/block`, `internal/ui/header`, `internal/ui/input`, `internal/ui/palette` — **no changes**.
+
+### 9.11 What Is Out of Scope for the MVP
+
+| Capability | Reason deferred |
+|------------|----------------|
+| Parallel tool execution | Complexity vs. negligible latency gain at local-model scale |
+| Tool output truncation / summarisation | Let the model handle it; add if context-window errors appear in practice |
+| Hard turn limit | Acceptable risk for v1 with a local model; add as a config option later |
+| Persistent conversation history | PRD §3 explicitly excludes session history persistence across restarts |
+| Tool allowlist / sandbox | Trust-in-local-model decision for v1; document the risk, revisit if remote agents are added |
+| Confirmation prompt for destructive commands | High-value safety feature but requires new UI; schedule as a follow-up task |
+| Streaming tool call deltas to the UI | Tool calls typically complete in <1s; batching the result is fine for v1 |
+
+---
+
+### ADR-04: `internal/agent` as a New Package (not extending `internal/acp`)
+
+**Status:** Accepted
+
+**Context:**  
+Two options exist for where to implement conversation history and the tool dispatch loop: extend `internal/acp/client.go` or create a new `internal/agent` package.
+
+**Decision:**  
+New package `internal/agent`.
+
+**Rationale:**
+
+| Concern | Extend `acp` | New `agent` |
+|---------|-------------|------------|
+| Single responsibility | Violated: transport + orchestration | Maintained: each package does one thing |
+| Testability | `Client` becomes a god struct | `Agent` can be tested with a mock `*acp.Client` |
+| Import graph | No new edge | `agent → acp` (clean, one direction) |
+| Existing test compatibility | `SendPrompt` tests would need to be updated | `SendPrompt` untouched |
+
+**Consequences:**
+- (+) `acp.Client` stays focused on HTTP transport; existing tests unchanged.
+- (+) `agent.Agent` is independently testable by injecting a fake client.
+- (+) Future transports (WebSocket, gRPC) only require changing `acp`; `agent` is transport-agnostic.
+- (−) One additional package for contributors to learn. Acceptable at this project size.
+
+---
+
+### ADR-05: OpenAI Wire Types Defined in `internal/acp`, Not a Shared `types` Package
+
+**Status:** Accepted
+
+**Context:**  
+`acp.Client.Chat()` and `agent.Agent` both need `Message`, `ToolCall`, `ToolDef`, and `ChatRequest`. Three locations are possible: `internal/acp`, `internal/agent`, or a new `internal/llm` (or `internal/types`) package.
+
+**Decision:**  
+Define all wire types in `internal/acp/types.go`.
+
+**Rationale:**  
+The types are OpenAI API wire shapes — they belong with the HTTP transport that sends and receives them. `agent` imports `acp` (already required to use `*acp.Client`), so referencing `acp.Message` adds no new dependency edge. A dedicated `types` package would add a third package purely to avoid an import, which is over-engineering for a two-package relationship.
+
+**Consequences:**
+- (+) No new package; no new import cycle risk.
+- (+) Wire types live next to the code that serialises/deserialises them.
+- (−) `acp` package now contains both transport logic and type definitions. This is acceptable because Go packages routinely own both their data types and their behaviour.

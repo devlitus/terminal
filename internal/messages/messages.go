@@ -81,3 +81,12 @@ type CopyLastOutputMsg struct{}
 // FixWithAIMsg is emitted by the command palette when the user selects
 // "Fix with AI".
 type FixWithAIMsg struct{}
+
+// AgentConfirmMsg is sent by the agent goroutine when run_command needs
+// the user to approve a shell command before it is executed.
+// The goroutine blocks on Reply until true (run) or false (cancel) is sent.
+type AgentConfirmMsg struct {
+	BlockID string
+	Command string
+	Reply   chan bool
+}

@@ -14,13 +14,21 @@ const Plasma300 lipgloss.Color = "#c4b5ff"
 
 var (
 	bodyStyle = lipgloss.NewStyle().
-			Background(theme.Ink1).
 			Foreground(Plasma300)
+
+	contentStyle = lipgloss.NewStyle().
+			Foreground(Plasma300)
+
+	toolLineStyle = lipgloss.NewStyle().
+			Foreground(theme.Ink6).
+			Italic(true)
 
 	leftBorderStyle = lipgloss.NewStyle().
 			BorderStyle(lipgloss.ThickBorder()).
 			BorderLeft(true).
-			BorderForeground(theme.Plasma500)
+			BorderForeground(theme.Plasma500).
+			MarginLeft(1).
+			MarginTop(1)
 )
 
 // Model is the Bubble Tea component for an AI suggestion card.
@@ -53,23 +61,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // View renders the AI card: a plasma-bordered body with token text,
 // a blinking cursor while streaming, or action hints when done.
 func (m Model) View() string {
+	// bodyW accounts for: 1 char left border + 1 char left margin = 2 total overhead.
+	bodyW := m.width - 2
+	if bodyW < 1 {
+		bodyW = 1
+	}
+
 	if m.card.ErrMsg != "" {
 		errStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#ef4444"))
-		body := bodyStyle.Render(errStyle.Render(m.card.ErrMsg))
+		body := bodyStyle.Width(bodyW).Render(errStyle.Render(m.card.ErrMsg))
 		return leftBorderStyle.Render(body)
 	}
 
 	tokenText := strings.Join(m.card.Tokens, "")
-
-	var content string
 	if m.card.Streaming {
-		content = tokenText + "▋"
-	} else {
-		content = tokenText
+		tokenText += "▋"
 	}
 
-	body := bodyStyle.Render(content)
+	body := bodyStyle.Width(bodyW).Render(renderLines(tokenText))
 	return leftBorderStyle.Render(body)
+}
+
+// renderLines applies per-line styling: tool status lines (⚙) get a muted
+// italic style; all other lines get the normal plasma content color.
+func renderLines(content string) string {
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "⚙") {
+			lines[i] = toolLineStyle.Render(line)
+		} else {
+			lines[i] = contentStyle.Render(line)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // lastNonEmptyLine returns the last non-blank line from the joined tokens,
