@@ -29,6 +29,11 @@
             "type": "command",
             "command": "bash .github/scripts/testing-autorun.sh",
             "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "bash .github/scripts/lint-autorun.sh",
+            "timeout": 60
           }
         ]
       }

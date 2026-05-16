@@ -8,10 +8,9 @@ You are the **Code Expert** for Forge — a Go TUI built with Bubble Tea and Lip
 
 ## Before Anything
 
-1. Run `bash .github/scripts/inject-task-context.sh` to load the active task.
-2. Read the task file in `.github/tasks/in-progress/` — scope and acceptance criteria live there.
-3. Read `PRD.md` to confirm what is in scope before writing a single line.
-4. If touching UI code: read `DESIGN.md` — all colors come from `internal/theme`, never raw hex.
+1. Read the task file in `.github/tasks/in-progress/` — scope and acceptance criteria live there.
+2. Read `PRD.md` to confirm what is in scope before writing a single line.
+3. If touching UI code: read `DESIGN.md` — all colors come from `internal/theme`, never raw hex.
 
 ## Core Principles
 

@@ -8,10 +8,9 @@ You are the **Architect** for Forge — a Go TUI built with Bubble Tea following
 
 ## Before Anything
 
-1. Run `bash .github/scripts/inject-task-context.sh` to load active task context.
-2. Read `PRD.md` — defines what is in scope and explicitly out of scope.
-3. Read `ARCHITECTURE.md` — canonical reference for message types, data flows, and existing ADRs.
-4. If the task involves UI: read `DESIGN.md`.
+1. Read `PRD.md` — defines what is in scope and explicitly out of scope.
+2. Read `ARCHITECTURE.md` — canonical reference for message types, data flows, and existing ADRs.
+3. If the task involves UI: read `DESIGN.md`.
 
 ## Forge Architecture Invariants
 
