@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-**Forge** is a terminal UI (TUI) for AI-assisted development. It presents every command execution as a discrete, addressable block — header, input, output — and connects to a coding agent via the Agent Client Protocol (ACP) to provide inline AI assistance.
+**Forge** is a terminal UI (TUI) for AI-assisted development. It presents every command execution as a discrete, addressable block — header, input, output — and connects to any OpenAI-compatible HTTP endpoint to provide inline AI assistance.
 
 Forge is a focused clone of opencode. It ships only the primitives that matter, without the enterprise surface area.
 
@@ -19,7 +19,7 @@ Forge is a focused clone of opencode. It ships only the primitives that matter, 
 | G1 | A terminal that feels native but renders command output as structured blocks |
 | G2 | Inline AI assistance that lives inside the terminal, not beside it |
 | G3 | Every block is addressable: shareable, replayable, focusable |
-| G4 | Zero configuration to start; connects to any ACP-compatible agent |
+| G4 | Zero configuration to start; connects to any OpenAI-compatible HTTP endpoint |
 
 ---
 
@@ -76,7 +76,12 @@ Appears inside a block after "Fix with AI" is triggered. Contains explanation, p
 
 ### 5.3 Input Bar
 
-Always visible at the bottom. Handles shell command execution, AI prompts (prefix with `/` or `@agent`), and built-in commands (`clear`, `help`, `ctrl+k`).
+Always visible at the bottom. Has two modes toggled by `!`:
+
+- **Chat mode** (default, `⬡` prompt) — input is sent to the AI agent. `/` and `@` also switch to chat mode from shell mode.
+- **Shell mode** (`❯` prompt) — input is executed as a shell command. `!command` executes a one-off shell command without permanently switching mode.
+
+Built-in commands (`clear`, `ctrl+k`) are intercepted regardless of mode.
 
 ---
 
@@ -92,16 +97,16 @@ Always visible at the bottom. Handles shell command execution, AI prompts (prefi
 - FR-05: Each command produces exactly one block
 - FR-06: Blocks scroll vertically; the viewport shows the most recent N blocks
 - FR-07: A focused block is visually distinguished (accent border)
-- FR-08: Blocks can be focused with keyboard (arrow keys / `j/k`)
-- FR-09: Copy the command or output of a focused block (`y`)
-- FR-10: Re-run the command in a focused block (`r`)
+- FR-08: Blocks can be focused with keyboard (`up / down` arrow keys)
+- FR-09: Copy the output of a focused block (`ctrl+y`)
+- FR-10: Re-run the command in a focused block (`ctrl+r`)
 
-### 6.3 AI assistance (ACP)
-- FR-11: Trigger "Fix with AI" on any failed block (`f` key or button)
-- FR-12: Send a free-form prompt to the agent from the input bar
-- FR-13: Agent response streams token-by-token into an AI card
+### 6.3 AI assistance
+- FR-11: Trigger "Fix with AI" on any failed block (`ctrl+f` or via palette)
+- FR-12: Send a free-form prompt to the agent from the input bar (chat mode)
+- FR-13: Agent response streams token-by-token into an AI card; tool calls are shown inline as `⚙ tool_name…`
 - FR-14: Accept an AI-suggested command with one keystroke (`Enter` on the card)
-- FR-15: Dismiss an AI card without running (`Esc` or `d`)
+- FR-15: Dismiss an AI card without running (`Esc` or `ctrl+d`)
 
 ### 6.4 Session
 - FR-16: Session starts at the current working directory
@@ -122,7 +127,7 @@ Always visible at the bottom. Handles shell command execution, AI prompts (prefi
 | NFR-02 | Keystroke-to-character latency < 16ms |
 | NFR-03 | No memory leaks on sessions > 1 hour |
 | NFR-04 | Works at terminal widths 80–220 columns |
-| NFR-05 | ACP agent connection failure must not crash the TUI; degrade gracefully |
+| NFR-05 | AI endpoint unavailable or unreachable must not crash the TUI; degrade gracefully |
 
 ---
 
@@ -133,42 +138,37 @@ Always visible at the bottom. Handles shell command execution, AI prompts (prefi
 | Language | Go 1.23+ | Performance, goroutines for concurrent blocks, stdlib covers all protocol needs |
 | TUI framework | Bubble Tea | Elm architecture, native viewport/scroll, first-class in Go TUI ecosystem |
 | Styling | Lip Gloss | CSS-like layout, borders, colors — maps directly to the Forge design tokens |
-| Agent protocol | ACP (stdio transport) | Designed for editor↔agent; has a Terminals primitive that matches command blocks exactly |
+| Agent protocol | OpenAI-compatible HTTP + SSE | Direct HTTP to any OpenAI-compatible endpoint; streaming via Server-Sent Events |
 | Shell execution | os/exec + io.Pipe | No dependency needed; goroutines handle concurrent streaming |
 
 ---
 
-## 9. Protocol integration (ACP)
+## 9. Protocol integration (HTTP)
 
-Forge acts as an **ACP Client**. The coding agent runs as a local subprocess (ACP Server over stdio).
+Forge calls any **OpenAI-compatible HTTP endpoint** directly — no subprocess, no ACP. The `internal/acp` package wraps `POST /chat/completions` with SSE streaming.
 
-### Agent subprocess launch
+### Connection
 
-The agent binary is resolved in order:
-1. `FORGE_AGENT_CMD` environment variable (if set)
-2. `forge-agent` on `$PATH`
-
-If the binary is not found, or if `api_base` is empty in config, Forge starts in **shell-only mode** — no AI features, no crash. The header bar shows an inline hint in ink-6:
+If `api_base` is empty in config, Forge starts in **shell-only mode** — no AI features, no crash. The header bar shows an inline hint in ink-6:
 > `AI offline — add config: ~/.config/forge/config.toml`
+
+### Agentic loop (`internal/agent`)
+
+The `agent` package maintains a multi-turn conversation history and dispatches tool calls requested by the model before sending the results back for a follow-up reply. Tools available to the agent:
+
+| Tool | What it does |
+|---|---|
+| `run_command` | Executes a shell command (user confirmation required) |
+| `read_file` | Reads a file from the filesystem |
+| `list_dir` | Lists directory contents |
+| `get_cwd` | Returns the current working directory |
 
 ### Graceful degradation (NFR-05)
 
-- A background goroutine calls `cmd.Wait()` to detect subprocess death. After death, `SendPrompt` returns `ErrNotConnected` without blocking.
-- The root model sets `shellOnly = true` on any unrecoverable ACP error mid-session.
+- If `api_base` is empty or `Connect` fails, `shellOnly = true` is set at startup.
+- The root model sets `shellOnly = true` on any unrecoverable HTTP error mid-session.
 - AI cards show `"AI error — try again"` in crimson-500 when a prompt fails.
-- `f` key in shell-only mode shows the offline hint in the header instead of calling ACP.
-
-### ACP messages used in v1
-
-| Message | When Forge uses it |
-|--------|-----------------|
-| `session/create` | On startup |
-| `prompt/turn` | User sends a message or triggers "Fix with AI" |
-| streaming tokens | Agent response streams token-by-token into the AI card |
-| `session/close` | On quit |
-
-### Out of scope for v1
-`session/list`, `session/resume`, `session/fork`, `slash_commands`, auth methods, `tool_calls` display, `terminals/*`.
+- `ctrl+f` in shell-only mode shows the offline hint in the header instead of calling the API.
 
 ---
 
@@ -223,16 +223,19 @@ Launched with `tea.WithAltScreen()` for full terminal ownership.
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Execute command |
-| `up / down` or `j / k` | Focus previous / next block |
-| `f` | Fix with AI (on failed block) |
-| `r` | Re-run focused block |
-| `y` | Copy focused block output |
-| `ctrl+c` | Kill running command |
+| `Enter` | Execute command / accept AI card |
+| `up / down` | Focus previous / next block |
+| `!` | Toggle between chat mode and shell mode |
+| `!command` | Execute a one-off shell command from chat mode |
+| `ctrl+f` | Fix with AI (on focused failed block) |
+| `ctrl+r` | Re-run focused block |
+| `ctrl+y` | Copy focused block output to clipboard |
+| `ctrl+c` | Kill running command; quits if no command is running |
+| `ctrl+q` | Quit immediately if no commands running; prompts `Quit? (y/n)` if any block is `StateRunning` |
 | `ctrl+k` | Open command palette |
-| `Esc` | Dismiss AI card / close palette |
-| `q` | Quit immediately if no commands running; prompts `Quit? (y/n)` if any block is `StateRunning` |
-| `ctrl+c` (root) | Cancels the running command (does not quit); quits if no command is running |
+| `Esc` | Dismiss AI card / close palette / cancel quit prompt |
+| `ctrl+d` | Dismiss AI card (alternative to `Esc`) |
+| `y / n` | Confirm or cancel quit prompt / agent tool confirmation |
 
 ---
 
@@ -256,7 +259,7 @@ These will NOT be built and should not influence architecture decisions:
 
 - [x] A developer can open Forge, run 10 commands, and see them as scrollable blocks
 - [x] A failed command shows "Fix with AI"; the suggestion runs with one keystroke
-- [x] The TUI connects to an ACP-compatible agent on startup without configuration
+- [x] The TUI connects to any OpenAI-compatible HTTP endpoint without additional tooling
 - [x] No crash on 500+ blocks in a session (ring buffer capped at 500, performance tests pass)
 - [x] Keyboard-only workflow is fully functional (no mouse required)
 
@@ -266,15 +269,15 @@ These will NOT be built and should not influence architecture decisions:
 
 | # | Question | Decision |
 |---|----------|----------|
-| OQ-1 | Which agent backend ships by default? | External `forge-agent` subprocess over ACP/stdio. Config passes API credentials. |
+| OQ-1 | Which agent backend ships by default? | Direct HTTP to any OpenAI-compatible endpoint (`api_base` in config). No subprocess needed. |
 | OQ-2 | Cap blocks in memory? | Ring buffer, cap at N=500. Drop oldest when exceeded. |
 | OQ-3 | Minimum Go version? | Go 1.23. |
-| OQ-4 | How is the agent binary resolved? | `FORGE_AGENT_CMD` env var → `forge-agent` on `$PATH` → shell-only fallback. |
+| OQ-4 | How is shell-only mode triggered? | `api_base` empty in config, or any unrecoverable HTTP error mid-session. |
 | OQ-5 | How are `cd` and `clear` handled? | Intercepted by the `session` package before reaching the shell; no subprocess spawned. |
 
 ### OQ-1 detail — Agent backend
 
-Forge connects to an external `forge-agent` subprocess that acts as both ACP server and LLM client. The agent speaks the OpenAI-compatible API; credentials are passed via config:
+Forge calls the OpenAI-compatible `/chat/completions` endpoint directly via HTTP + SSE. Credentials are passed via config:
 
 ```toml
 # ~/.config/forge/config.toml
@@ -284,7 +287,7 @@ api_key  = ""                           # empty for local models
 model    = "qwen2.5-coder:7b"
 ```
 
-Defaults point to a local Ollama instance. Forge itself never makes HTTP calls — it only speaks ACP over stdio to the agent subprocess.
+Defaults point to a local Ollama instance.
 
 **Recommended models:**
 
