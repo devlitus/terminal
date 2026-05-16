@@ -22,7 +22,7 @@
 
 ## 1. Overview
 
-Forge is a TUI terminal application built on Bubble Tea's Elm-style architecture. Every shell command produces a discrete, addressable **Command Block** — a self-contained unit of header, input, and streamed output — rendered in a scrollable viewport between a persistent header bar and input bar. An ACP (Agent Client Protocol) client over stdio connects Forge to a local coding agent, enabling inline AI assistance inside failed blocks without leaving the terminal.
+Forge is a TUI terminal application built on Bubble Tea's Elm-style architecture. Every shell command produces a discrete, addressable **Command Block** — a self-contained unit of header, input, and streamed output — rendered in a scrollable viewport between a persistent header bar and input bar. An HTTP client (`internal/acp`) connects Forge directly to any OpenAI-compatible endpoint, enabling inline AI assistance and a stateful agentic loop with tool calls.
 
 ---
 
@@ -30,19 +30,20 @@ Forge is a TUI terminal application built on Bubble Tea's Elm-style architecture
 
 | Package | Import Path | Responsibility |
 |---------|-------------|---------------|
-| `main` | `github.com/forge-tui/forge/cmd/forge` | Program entry point: initializes config, starts ACP client, constructs the root Bubble Tea model, and calls `tea.NewProgram().Run()` |
-| `config` | `github.com/forge-tui/forge/internal/config` | Loads and validates `~/.config/forge/config.toml`; exposes a typed `Config` struct; enables shell-only mode when no agent config is present |
+| `main` | `github.com/forge-tui/forge/cmd/forge` | Program entry point: loads config, constructs `acp.Client` + `agent.Agent`, builds the root Bubble Tea model (`rootModel`), and calls `tea.NewProgram().Run()`. Also owns block creation — `SubmitMsg` is handled here, which adds to the ring buffer and calls `forgeExec.Start()`. |
+| `config` | `github.com/forge-tui/forge/internal/config` | Loads and validates `~/.config/forge/config.toml`; exposes a typed `Config` struct; `IsShellOnly()` returns true when `api_base` is empty |
 | `theme` | `github.com/forge-tui/forge/internal/theme` | Declares all Lip Gloss `lipgloss.Color` constants mapped from the design token table; the single source of truth for every color value in the TUI |
-| `block` | `github.com/forge-tui/forge/internal/block` | Defines the `Block` data model: ID, command string, cwd, state (`Running`/`Success`/`Failed`), exit code, duration, accumulated output bytes, and AI card content |
-| `exec` | `github.com/forge-tui/forge/internal/exec` | Starts shell commands via `os/exec` + `io.Pipe`; owns the per-command goroutine that reads stdout/stderr and emits `ExecOutputMsg` and `ExecDoneMsg` as `tea.Cmd` return values |
-| `acp` | `github.com/forge-tui/forge/internal/acp` | Manages the ACP subprocess lifecycle over stdio; exposes `Client` which marshals JSON-RPC requests and owns the streaming goroutine that emits `ACPTokenMsg` and `ACPDoneMsg` |
-| `session` | `github.com/forge-tui/forge/internal/session` | Tracks current working directory, owns the ordered list of `block.Block` values (the ring buffer), dispatches `CwdChangedMsg` on `cd`, handles `clear` by emitting `ViewportClearMsg` |
-| `ui/block` | `github.com/forge-tui/forge/internal/ui/block` | Bubble Tea component for a single Command Block; renders header, command line, and scrollable output; handles focus state and per-block keyboard actions (`r`, `y`, `f`, `ctrl+c`) |
-| `ui/header` | `github.com/forge-tui/forge/internal/ui/header` | Renders the 1-line top bar: app name, current working directory, and ACP connection indicator; updates on `CwdChangedMsg` |
-| `ui/input` | `github.com/forge-tui/forge/internal/ui/input` | Renders the 1-line bottom input bar; owns the text field; distinguishes shell commands from AI prompts (`/` or `@agent` prefix) and built-in commands (`clear`, `help`); emits `OpenPaletteMsg` on `ctrl+k` |
-| `ui/aicard` | `github.com/forge-tui/forge/internal/ui/aicard` | Renders the AI Suggestion Card that appears inside a failed block; streams incoming `ACPTokenMsg` tokens; shows Run/Dismiss actions after `ACPDoneMsg` |
-| `ui/viewport` | `github.com/forge-tui/forge/internal/ui/viewport` | Manages the scrollable list of `ui/block` components; routes `ExecOutputMsg`, `ExecDoneMsg`, `ACPTokenMsg`, `ACPDoneMsg`, and `BlockFocusedMsg` to the correct child block by ID; enforces the ring buffer cap (ADR-03) |
-| `ui/palette` | `github.com/forge-tui/forge/internal/ui/palette` | Renders the command palette overlay triggered by `ctrl+k`; implements fuzzy filtering over recent commands and built-in actions; emits the selected action as a message on `Enter` |
+| `block` | `github.com/forge-tui/forge/internal/block` | Defines the `Block` data model (ID, command, cwd, state, exit code, duration, output lines, `AICard`) and `RingBuffer` (cap 500, front-drop eviction) |
+| `exec` | `github.com/forge-tui/forge/internal/exec` | Starts shell commands via `os/exec` + `io.Pipe`; owns the per-command goroutine that reads stdout/stderr and emits `ExecOutputMsg` and `ExecDoneMsg` via `p.Send()` |
+| `acp` | `github.com/forge-tui/forge/internal/acp` | HTTP client for any OpenAI-compatible endpoint. `SendPrompt` does single-turn streaming; `Chat` supports multi-turn with tool calls (SSE, OpenAI wire format). No subprocess — no stdio. |
+| `agent` | `github.com/forge-tui/forge/internal/agent` | Agentic loop on top of `acp`: maintains conversation history, dispatches tool calls (`run_command`, `read_file`, `list_dir`, `get_cwd`), confirms destructive commands via `AgentConfirmMsg`, loops until the model replies with no tool calls |
+| `session` | `github.com/forge-tui/forge/internal/session` | Tracks current working directory; intercepts built-ins (`cd`, `clear`) before they reach the shell; dispatches `CwdChangedMsg` on `cd` and `ViewportClearMsg` on `clear` |
+| `ui/block` | `github.com/forge-tui/forge/internal/ui/block` | Bubble Tea component for a single Command Block; renders header, command line, scrollable output, and AI card; exposes `SetFocused`, `AppendOutput`, `AppendAIToken`, `SetDone`, `SetAIError`, `DismissAICard` |
+| `ui/header` | `github.com/forge-tui/forge/internal/ui/header` | Renders the 1-line top bar: CWD and optional status hint (e.g. "AI offline…"); updates on `CwdChangedMsg`; shows a second line when `SetStatusHint` is non-empty |
+| `ui/input` | `github.com/forge-tui/forge/internal/ui/input` | Renders the 1-line bottom input bar. Two modes: chat (`⬡`, plasma-500) and shell (`❯`, ember-500), toggled by `!`. Emits `SubmitMsg` on Enter and `OpenPaletteMsg` on `ctrl+k` |
+| `ui/aicard` | `github.com/forge-tui/forge/internal/ui/aicard` | Renders the AI Suggestion Card embedded in a block; streams `ACPTokenMsg` tokens; shows Run/Dismiss actions after `ACPDoneMsg`; handles Enter (accept) and Esc/`ctrl+d` (dismiss) |
+| `ui/viewport` | `github.com/forge-tui/forge/internal/ui/viewport` | Manages the scrollable list of `ui/block` components; routes messages to the correct child by ID; handles `up`/`down` block navigation, `ctrl+y` copy, `ctrl+r` re-run, and AI card key events |
+| `ui/palette` | `github.com/forge-tui/forge/internal/ui/palette` | Renders the command palette overlay triggered by `ctrl+k`; implements fuzzy filtering over the 20 most-recent commands plus built-in actions (Re-run, Copy, Fix with AI); emits the selected action on `Enter` |
 
 ---
 
@@ -104,8 +105,8 @@ type ACPTokenMsg struct {
 }
 ```
 
-**Sent by:** `internal/acp` — the streaming goroutine, one message per JSON-RPC `stream` event.  
-**Consumed by:** `internal/ui/viewport` → `internal/ui/aicard` for the matching `BlockID`.
+**Sent by:** `internal/agent` — one message per SSE content delta from the HTTP streaming response. Tool call notifications are also sent as `ACPTokenMsg` with an inline `⚙ tool_name…` prefix.  
+**Consumed by:** `internal/ui/viewport` → `internal/ui/block` (which holds the AI card) for the matching `BlockID`.
 
 ---
 
@@ -122,8 +123,8 @@ type ACPDoneMsg struct {
 }
 ```
 
-**Sent by:** `internal/acp` — emitted once per `prompt/turn` call.  
-**Consumed by:** `internal/ui/aicard` — transitions card from streaming state to Run/Dismiss action state. When `Err != nil`, the card renders a degraded error message (NFR-05).
+**Sent by:** `internal/agent` — emitted once per `agent.Send()` call when the agentic loop ends (either clean completion or error).  
+**Consumed by:** `internal/ui/viewport` → `internal/ui/block` — transitions the AI card from streaming state to Run/Dismiss action state. When `Err != nil`, the root model sets `shellOnly = true` and the card renders an error message (NFR-05).
 
 ---
 
@@ -133,14 +134,14 @@ Signals that keyboard focus has moved to a specific block.
 
 ```go
 // BlockFocusedMsg is emitted by the viewport when the user navigates
-// focus with arrow keys or j/k. An empty BlockID means no block is focused.
+// focus with arrow keys. An empty BlockID means no block is focused.
 type BlockFocusedMsg struct {
     BlockID string
 }
 ```
 
-**Sent by:** `internal/ui/viewport` — on arrow key / `j` / `k` navigation.  
-**Consumed by:** `internal/ui/block` components — each component checks whether `BlockID` matches its own ID to set or clear the focused visual state (ember-500 border).
+**Sent by:** `internal/ui/viewport` — on `up` / `down` arrow key navigation.  
+**Consumed by:** `internal/ui/viewport` itself — `focusedIdx` is updated and `renderBlocks()` re-renders all blocks with the correct focus state (ember-500 border on the focused block).
 
 ---
 
@@ -149,7 +150,7 @@ type BlockFocusedMsg struct {
 Signals that the working directory has changed after a successful `cd` command.
 
 ```go
-// CwdChangedMsg is emitted by session.Run() when a cd command
+// CwdChangedMsg is emitted by session.Handle() when a cd command
 // completes and the working directory has changed.
 type CwdChangedMsg struct {
     Cwd string // absolute path of the new working directory
@@ -198,98 +199,110 @@ User types command, presses Enter
         │
         ▼
   ui/input.Update(tea.KeyMsg{"enter"})
-        │  returns tea.Cmd: session.Run(cmd, cwd)
+        │  emits SubmitMsg{Input: cmd}
         ▼
-  session.Run()
-        │  1. creates block.Block{ID: uuid, State: Running, Cmd: cmd, Cwd: cwd}
-        │  2. appends block to ring buffer (enforces N=500 cap)
-        │  returns tea.Batch(
-        │      BlockCreatedMsg{Block},       ← viewport adds a new ui/block child
-        │      exec.Start(blockID, cmd, cwd) ← returns a tea.Cmd
-        │  )
+  rootModel.Update(SubmitMsg)  [cmd/forge/main.go]
+        │  1. session.Handle(cmd) — intercepts built-ins (cd, clear); returns if handled
+        │  2. b := block.Block{Command: cmd, Dir: cwd, State: Running, StartedAt: now}
+        │  3. b = rb.Add(b)          ← ring buffer (cap 500, front-drop)
+        │  4. vp.AppendBlock(b)      ← viewport adds a new ui/block child directly
+        │  5. returns forgeExec.Start(program, blockID, cmd, dir, ctx)
         ▼
   exec.Start() → launches goroutine
         │
         │  goroutine: reads io.Pipe (stdout+stderr merged)
+        │  communicates via program.Send() — never writes to model state
         │
-        ├── chunk available ──► returns ExecOutputMsg{BlockID, Data}
+        ├── chunk available ──► program.Send(ExecOutputMsg{BlockID, Data})
         │                              │
         │                              ▼
-        │                       ui/viewport.Update()
-        │                              │ routes by BlockID
+        │                       rootModel.Update(ExecOutputMsg)
+        │                              │ delegates to vp.Update(msg)
         │                              ▼
-        │                       ui/block.Update() → appends Data to output buffer
-        │                              │
+        │                       viewport routes by BlockID → ui/block.AppendOutput()
         │                              └─► tea re-renders the block
         │
-        └── pipe EOF ──────────► returns ExecDoneMsg{BlockID, ExitCode, Duration}
+        └── pipe EOF ──────────► program.Send(ExecDoneMsg{BlockID, ExitCode, Duration})
                                         │
                                         ▼
-                                 ui/viewport.Update()
-                                        │ routes by BlockID
+                                 rootModel.Update(ExecDoneMsg)
+                                        │ cancels the context for that blockID
+                                        │ delegates to vp.Update(msg)
                                         ▼
-                                 ui/block.Update()
-                                        │ sets State = Success | Failed
-                                        │ sets ExitCode, Duration on header
-                                        │
-                                        └─► session updates block.Block data model
-                                            tea re-renders the block with status badge
+                                 viewport routes by BlockID → ui/block.SetDone()
+                                        └─► sets State = Success | Failed, badge re-renders
 ```
 
-**Key invariant:** The goroutine in `exec.Start` never writes to shared memory. It communicates exclusively by returning messages through the `tea.Cmd` channel mechanism. The Bubble Tea runtime serialises all `Update` calls on the main goroutine — no locks are needed in any `Update` or `View` function.
+**Key invariant:** The goroutine in `exec.Start` never writes to shared memory. It communicates exclusively via `program.Send()`, which enqueues messages into the Bubble Tea runtime's internal channel. The runtime delivers them to `Update` on the main goroutine — no locks are needed in any `Update` or `View` function.
 
 ---
 
 ## 5. Data Flow: ACP / AI Integration
 
 ```
-User presses 'f' on a focused failed block
+User presses ctrl+f on a focused failed block (or selects "Fix with AI" from palette)
         │
         ▼
-  ui/block.Update(tea.KeyMsg{"f"})
-        │  returns tea.Cmd: acp.FixWithAI(blockID, cmd, output)
-        │  also emits BlockFocusedMsg{blockID} to show AI card placeholder
+  rootModel.Update(tea.KeyMsg{"ctrl+f"})  [cmd/forge/main.go]
+        │  1. checks shellOnly — if true, shows offline hint, returns
+        │  2. looks up focused block; checks State == StateFailed
+        │  3. builds prompt: "Command: X\nError output:\n...\nFix this command."
+        │  4. vp.InitAICard(blockID)   ← shows streaming placeholder in the block
+        │  5. returns agent.Send(program, blockID, prompt)
         ▼
-  acp.FixWithAI() → launches streaming goroutine
-        │  1. marshals prompt: cmd + truncated output + system instructions
-        │  2. sends JSON-RPC `prompt/turn` over stdio pipe to agent subprocess
+  agent.Send() → goroutine starts (agentic loop)
+        │  Appends system prompt + user message to history
         │
-        │  goroutine: reads newline-delimited JSON stream from agent
+        ├─ LOOP ─────────────────────────────────────────────────────────────────┐
+        │    │                                                                    │
+        │    ├─ client.Chat(ctx, history, toolDefs, onToken)                     │
+        │    │       onToken → program.Send(ACPTokenMsg{BlockID, token})         │
+        │    │                                                                    │
+        │    ├─ if toolCalls == nil:                                              │
+        │    │       append assistant reply to history                            │
+        │    │       program.Send(ACPDoneMsg{BlockID}) ← LOOP EXIT               │
+        │    │                                                                    │
+        │    └─ else (model requested tools):                                     │
+        │            append assistant tool-call turn to history                  │
+        │            for each tool call:                                         │
+        │              program.Send(ACPTokenMsg{"\n⚙ tool_name…\n"})            │
+        │              if run_command → program.Send(AgentConfirmMsg)            │
+        │                              block goroutine on reply channel          │
+        │                              rootModel.Update(AgentConfirmMsg)         │
+        │                              → shows "Run: X  (y/n)" in input bar     │
+        │                              user presses y/n → reply sent             │
+        │              result = tool.Execute(ctx, args)                          │
+        │              append tool result to history                             │
+        │            continue LOOP ───────────────────────────────────────────────┘
         │
-        ├── token event ──────► returns ACPTokenMsg{BlockID, Token}
-        │                              │
-        │                              ▼
-        │                       ui/viewport.Update()
-        │                              │ routes by BlockID
-        │                              ▼
-        │                       ui/aicard.Update()
-        │                              │ appends Token to card content buffer
-        │                              └─► tea re-renders card (streaming text)
+        ├── ACPTokenMsg received ──► rootModel.Update → vp.Update → block.AppendAIToken
+        │                                └─► tea re-renders block (streaming text)
         │
-        └── stream end ────────► returns ACPDoneMsg{BlockID, Err}
-                                        │
-                                        ▼
-                                 ui/aicard.Update()
-                                        │ Err == nil → show [Run] [Dismiss] actions
-                                        │ Err != nil → show error message, [Dismiss]
-                                        └─► tea re-renders card (action state)
+        └── ACPDoneMsg received
+              │  Err == nil → vp.Update → block.SetAIStreamDone
+              │               AI card shows [Enter=Run] [ctrl+d=Dismiss] actions
+              │  Err != nil → root sets shellOnly=true
+              │               vp.SetAIError(blockID, "AI error — try again")
+              └─► tea re-renders
 
-  User presses Enter on [Run]
+  User presses Enter on the AI card
         │
         ▼
-  ui/aicard.Update(tea.KeyMsg{"enter"})
-        │  extracts suggested command from card content
-        │  returns tea.Cmd: session.Run(suggestedCmd, cwd)
-        └─► identical flow to §4 shell execution above
+  viewport.Update(tea.KeyMsg{"enter"}) → block.Update(enter)
+        │  emits AcceptAIMsg{Command: suggestedCmd}
+        ▼
+  rootModel.Update(AcceptAIMsg)
+        │  dismisses card → emits DismissAIMsg
+        └─► creates new block, calls forgeExec.Start(...)  ← identical to §4
 
-  User presses Esc or 'd' on [Dismiss]
+  User presses Esc or ctrl+d on [Dismiss]
         │
         ▼
-  ui/aicard.Update() → emits ACPCardDismissedMsg{BlockID}
-        └─► ui/viewport removes the AI card from the block, re-renders
+  viewport.Update → block.Update → emits DismissAIMsg
+        └─► vp.Update(DismissAIMsg) → block.DismissAICard(), re-renders
 ```
 
-**Graceful degradation (NFR-05):** If the ACP subprocess is not running or the transport errors, `ACPDoneMsg.Err` is non-nil. The AI card renders: `"Agent unavailable — check config"` with only a Dismiss action. The rest of the TUI continues operating normally.
+**Graceful degradation (NFR-05):** If `api_base` is empty or the HTTP request fails, `ACPDoneMsg.Err` is non-nil. The root model sets `shellOnly = true`, the AI card renders `"AI error — try again"` in crimson-500, and the rest of the TUI continues operating normally.
 
 ---
 
@@ -300,11 +313,10 @@ User presses 'f' on a focused failed block
 | Goroutine | Owner | Lifetime | Communicates via |
 |-----------|-------|----------|-----------------|
 | Bubble Tea event loop | `tea.Program` | Process lifetime | `tea.Msg` channel (internal) |
-| Per-command exec reader | `internal/exec` | Duration of one shell command | `tea.Cmd` returning `ExecOutputMsg` / `ExecDoneMsg` |
-| ACP streaming reader | `internal/acp` | Duration of one `prompt/turn` call | `tea.Cmd` returning `ACPTokenMsg` / `ACPDoneMsg` |
-| ACP subprocess | OS (via `os/exec`) | Process lifetime (managed by `acp.Client`) | stdin/stdout pipes to `acp.Client` |
+| Per-command exec reader | `internal/exec` | Duration of one shell command | `program.Send(ExecOutputMsg)` / `program.Send(ExecDoneMsg)` |
+| Agent agentic loop | `internal/agent` | Duration of one `agent.Send()` call | `program.Send(ACPTokenMsg)` / `program.Send(ACPDoneMsg)` / `program.Send(AgentConfirmMsg)` |
 
-At peak load there are at most **one exec goroutine per running block** plus **one ACP streaming goroutine**. In practice, Forge runs one command at a time (the input bar is locked while a command runs), so there is typically one exec goroutine active at any moment.
+At peak load there is at most one exec goroutine per running block plus one agent goroutine. Multiple commands can be started in parallel (each gets its own context + cancel); the ring buffer and viewport are updated synchronously in `Update`.
 
 ### Safety invariant
 
@@ -359,10 +371,10 @@ The terminal window is divided into three fixed zones. Heights are computed from
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### Zone: Header Bar (1 line, top)
+### Zone: Header Bar (1–2 lines, top)
 
-**Height:** always 1 terminal row.  
-**Content:** `Forge` · `cwd` · ACP connection indicator (dot, coloured mint-500 or crimson-500).
+**Height:** 1 terminal row normally; expands to 2 rows when `SetStatusHint` is non-empty (e.g. "AI offline — add config: ~/.config/forge/config.toml").  
+**Content:** `Forge` · `cwd` · optional status hint on a second line (ink-6).
 
 ```go
 // Lip Gloss style (internal/ui/header)
@@ -419,7 +431,14 @@ const (
 ### Zone: Input Bar (1 line, bottom)
 
 **Height:** always 1 terminal row.  
-**Content:** ember-500 prompt glyph (`❯`) + command text field.
+**Content:** mode-dependent prompt glyph + text field. Two modes:
+
+| Mode | Glyph | Prompt color | Trigger |
+|------|-------|-------------|---------|
+| Chat (default) | `⬡` | plasma-500 (`#7c5cff`) | startup; `!` toggle |
+| Shell | `❯` | ember-500 (`#ff6b3d`) | `!` toggle; `!command` one-shot |
+
+When a quit prompt or agent confirmation is pending, the input bar is replaced by a temporary status line rendered in solar-500.
 
 ```go
 // Lip Gloss style (internal/ui/input)
@@ -427,10 +446,6 @@ inputBarStyle := lipgloss.NewStyle().
     Background(lipgloss.Color("#0f1118")). // ink-1
     Width(termWidth).
     Padding(0, 1)
-
-promptStyle := lipgloss.NewStyle().
-    Foreground(lipgloss.Color("#ff6b3d")). // ember-500
-    Bold(true)
 ```
 
 **Width responsiveness (NFR-04):** All zone widths are set from `tea.WindowSizeMsg.Width`. Supported range is 80–220 columns. The block output area clips long lines rather than wrapping to preserve command-output fidelity.
@@ -469,33 +484,33 @@ Use Bubble Tea v1 (`github.com/charmbracelet/bubbletea` v1.x) as the TUI framewo
 
 ---
 
-### ADR-02: ACP over stdio transport over HTTP/WebSocket
+### ADR-02: Direct HTTP to OpenAI-compatible endpoint (no subprocess)
 
 **Status:** Accepted
 
 **Context:**  
-ACP (Agent Client Protocol) supports multiple transports. The agent runs as a local subprocess. Two realistic options are stdio and HTTP (localhost server).
+Two options were considered for connecting Forge to an LLM: (a) spawn a local `forge-agent` subprocess and communicate over ACP/stdio, or (b) call the OpenAI-compatible HTTP API directly from `internal/acp`.
 
 **Decision:**  
-Use stdio (stdin/stdout pipes to the agent subprocess) as the ACP transport.
+Call the OpenAI-compatible `/chat/completions` endpoint directly via HTTP + SSE. No subprocess is spawned.
 
 **Rationale:**
 
-| Concern | stdio | HTTP |
-|---------|-------|------|
-| Network stack required | No | Yes (port binding, firewall, localhost) |
-| Subprocess lifetime coupling | Automatic (OS kills agent when TUI exits) | Manual (agent may outlive TUI) |
-| Port conflicts | None | Possible (port in use errors) |
-| Configuration | Zero (path to agent binary only) | URL + port required |
-| Latency | Sub-millisecond IPC | TCP loopback (~0.1ms, negligible but non-zero) |
-| Security | Process isolation; no socket exposure | Localhost socket could be probed by other processes |
+| Concern | Subprocess (ACP/stdio) | Direct HTTP |
+|---------|----------------------|-------------|
+| Dependency | Requires `forge-agent` binary on `$PATH` | Only needs an API URL in config |
+| Startup | Must resolve binary, spawn process | Instant — just an HTTP client |
+| Subprocess death handling | Background goroutine + `cmd.Wait()` | No subprocess to monitor |
+| Debugging | Must intercept pipe (`tee`) | Inspectable with curl or any HTTP proxy |
+| Model flexibility | Agent binary controls model choice | `model` field in config; works with Ollama, OpenRouter, DeepSeek, etc. |
+| Tool call support | Depends on agent implementation | Native via OpenAI `tools` field |
 
 **Consequences:**
-- (+) Zero network configuration; no firewall rules, no port conflicts.
-- (+) Agent subprocess is automatically cleaned up when the TUI exits (OS pipe close cascades to the subprocess's stdin read returning EOF).
-- (+) No socket exposure reduces attack surface.
-- (−) Stdio transport means only one agent per TUI process. Multi-agent scenarios (out of scope for v1 per PRD §12) would require a different transport.
-- (−) Debugging the ACP wire protocol requires intercepting the pipe (e.g., `tee`), unlike HTTP which can be inspected with curl.
+- (+) No binary dependency; zero setup beyond a config file.
+- (+) Works with any OpenAI-compatible endpoint (Ollama, DeepSeek, OpenRouter, etc.) by changing `api_base`.
+- (+) Tool calls are first-class via the `tools` field — no custom protocol extension needed.
+- (−) Forge makes HTTP calls directly, which means it needs the API key in config (vs. an agent subprocess acting as a credential proxy).
+- (−) Debugging requires HTTP inspection tooling rather than simply reading stdio output.
 
 ---
 
@@ -554,8 +569,7 @@ FR-06 states "blocks scroll vertically; the viewport shows the most recent N blo
 
 ## 9. Agent System (Agentic Loop + Tool Calls)
 
-> **Status:** Design · May 2026  
-> This section specifies the architecture for evolving the current single-turn ACP client into a stateful, tool-calling agent. It is the canonical reference for the implementation task.
+> **Status:** Implemented · May 2026
 
 ### 9.1 Problem Statement
 
@@ -572,14 +586,14 @@ No existing package is rewritten. The changes are purely additive, except for tw
 ```
 internal/
   acp/
-    client.go    — EXTEND: add Chat() method alongside existing SendPrompt
+    client.go    — EXTENDED: Chat() added alongside existing SendPrompt
     types.go     — NEW: OpenAI-compatible wire types (Message, ToolCall, ToolDef, …)
   agent/
     agent.go     — NEW: Agent struct, Send(), Reset()
     tools.go     — NEW: Tool type + 4 MVP tool implementations
-    prompt.go    — NEW: system prompt builder
+    prompt.go    — NEW: systemPrompt constant
   messages/
-    messages.go  — EXTEND: add AgentToolCallMsg and AgentToolResultMsg
+    messages.go  — EXTENDED: AgentConfirmMsg added
 ```
 
 **Why a new `internal/agent/` package instead of extending `internal/acp/`?**
@@ -649,17 +663,18 @@ type ChatResponse struct {
 One new method is added to `acp.Client`. `SendPrompt` is preserved unchanged for backward compatibility with existing tests.
 
 ```go
-// Chat sends req to the OpenAI-compatible /chat/completions endpoint.
-// onToken is called for each streamed content delta (may not be called at all
-// if the model produces only tool calls). Chat blocks until the stream ends.
-// The returned ChatResponse is assembled from the full stream.
-func (c *Client) Chat(ctx context.Context, req ChatRequest, onToken func(string)) (*ChatResponse, error)
+```go
+// Chat sends a multi-turn conversation to POST /chat/completions.
+// onToken is called for each streamed content delta; tool call deltas are
+// accumulated internally. Returns the assembled tool calls (nil if the model
+// replied with content only). Chat blocks until the SSE stream ends.
+func (c *Client) Chat(ctx context.Context, msgs []Message, tools []ToolDef, onToken func(string)) ([]ToolCall, error)
 
-// Model returns the configured model name (needed by agent to build ChatRequest).
+// Model returns the configured model name.
 func (c *Client) Model() string
 ```
 
-`Chat` shares the SSE parsing logic with `sendPromptHTTP`; the delta struct is extended to also capture `tool_calls` deltas per the OpenAI streaming format. Tool call deltas are accumulated and assembled into `ChatResponse.ToolCalls` after the stream ends.
+`Chat` accumulates tool call deltas by index across SSE chunks and returns them as `[]ToolCall` when the stream ends. Content tokens are forwarded via `onToken` as they arrive.
 
 ### 9.5 Tool Layer (`internal/agent/tools.go`)
 
@@ -701,8 +716,10 @@ type Agent struct {
     mu      sync.Mutex
 }
 
+```go
 // New constructs an Agent with the four MVP tools pre-registered.
-func New(client *acp.Client, cwd func() string) *Agent
+// confirmFn is called by run_command before executing; returning false cancels it.
+func New(client *acp.Client, cwd func() string, confirmFn func(command string) bool) *Agent
 
 // Send starts the agentic loop for userInput as a tea.Cmd.
 // The returned cmd runs in a goroutine. It emits intermediate messages via
@@ -713,57 +730,48 @@ func (a *Agent) Send(p *tea.Program, blockID, userInput string) tea.Cmd
 func (a *Agent) Reset()
 ```
 
-`history` is a flat `[]acp.Message`. A system message is prepended on every `Chat` call (not stored in history) so that the system prompt always reflects the current CWD.
+`history` is a flat `[]acp.Message`. A system prompt is prepended to history on the first turn and stored there. Tool call notifications are sent as `ACPTokenMsg` with an inline `⚙ tool_name…` prefix rather than as a dedicated message type.
 
 ### 9.7 System Prompt (`internal/agent/prompt.go`)
 
-```go
-func buildSystemPrompt(cwd, shell string) string
-```
-
-Content:
+The system prompt is a package-level constant `systemPrompt` (not a function). It is appended to history on the first turn and does not change on `cd`.
 
 ```
 You are Forge, an AI assistant embedded in a terminal application.
-You help developers run commands, navigate the filesystem, read code, and debug problems.
 
-Current working directory: {cwd}
-Shell: {shell}
+You help users with shell commands, file system tasks, and general programming questions.
 
-Guidelines:
-- When the user asks you to do something, call the appropriate tool directly. Do not describe what you would do — do it.
-- Keep prose responses short. Developers read output, not essays.
-- Before running a destructive command (rm, git reset --hard, git push --force, anything with sudo), explain what it does and ask for confirmation.
-- When a command produces long output, summarise it; do not echo thousands of lines verbatim.
-- Prefer non-interactive command variants (--no-pager, --no-edit, -y flags where safe).
+You have access to the following tools:
+- run_command: execute a shell command in the current working directory
+- read_file: read the contents of a file
+- list_dir: list the contents of a directory
+- get_cwd: get the current working directory
+
+When asked to do something that involves the file system or running commands, prefer using
+your tools over explaining how to do it manually.
+
+Keep your responses concise. When you run a command and get the output, summarize what you
+found rather than repeating the raw output verbatim.
+
+The user is a developer working in a terminal. Be direct and technical.
 ```
-
-CWD is injected at every request (not stored in history) so it reflects `cd` changes without needing a special update path.
 
 ### 9.8 New Bubble Tea Message Types
 
-Two new types are added to `internal/messages/messages.go`:
+One new type was added to `internal/messages/messages.go`:
 
 ```go
-// AgentToolCallMsg is emitted when the agent begins executing a tool call
-// requested by the model. Used to update the AI card with a status line.
-type AgentToolCallMsg struct {
-    BlockID  string
-    ToolName string
-    Args     string // raw JSON arguments, for display only
-}
-
-// AgentToolResultMsg is emitted when a tool call completes.
-// Err is non-nil if the tool itself failed (distinct from the model failing).
-type AgentToolResultMsg struct {
-    BlockID  string
-    ToolName string
-    Result   string
-    Err      error
+// AgentConfirmMsg is sent by the agent goroutine when run_command needs
+// the user to approve a shell command before it is executed.
+// The goroutine blocks on Reply until true (run) or false (cancel) is sent.
+type AgentConfirmMsg struct {
+    BlockID string
+    Command string
+    Reply   chan bool
 }
 ```
 
-The root model and viewport forward these to the AI card. The AI card renders a compact status line (e.g., `⚙ run_command: go build ./...`) while the tool is running, replaced by the result summary when done. This is additive — no existing message handling changes.
+Tool call notifications (start + name) are sent as `ACPTokenMsg` with an inline `⚙ tool_name…` prefix — no separate `AgentToolCallMsg` or `AgentToolResultMsg` types. The root model renders the confirmation prompt in solar-500 in place of the input bar while `confirmPending != nil`.
 
 ### 9.9 Agentic Loop Flow
 
@@ -789,10 +797,11 @@ Agent.Send(p, blockID, userInput) returns tea.Cmd
         │    └─ else (model requested tools):                              │
         │            append {role:assistant, toolCalls} to history        │
         │            for each tool call (sequential):                     │
-        │              p.Send(AgentToolCallMsg{...})                      │
-        │              result, err = tool.Execute(ctx, args)              │
-        │              p.Send(AgentToolResultMsg{...})                    │
-        │              append {role:tool, result} to history              │
+        │              p.Send(ACPTokenMsg{"\n⚙ tool_name…\n"})           │
+        │              if run_command → p.Send(AgentConfirmMsg)          │
+        │                              blocks on reply channel           │
+        │              result, err = tool.Execute(ctx, args)             │
+        │              append {role:tool, result} to history             │
         │            continue LOOP ────────────────────────────────────────┘
 ```
 
@@ -806,11 +815,13 @@ Agent.Send(p, blockID, userInput) returns tea.Cmd
 
 | File | Change |
 |------|--------|
-| `internal/acp/client.go` | Add `Chat(ctx, req, onToken)` and `Model() string` methods |
+| `internal/acp/client.go` | Added `Chat(ctx, msgs, tools, onToken)` and `Model() string` methods |
 | `internal/acp/types.go` | **New file**: OpenAI wire types (§9.3) |
-| `internal/messages/messages.go` | Add `AgentToolCallMsg` and `AgentToolResultMsg` |
-| `cmd/forge/main.go` | Replace `*acp.Client` field with `*agent.Agent`; replace `startACPStream(...)` calls with `agent.Send(program, blockID, input)` |
-| `internal/ui/aicard/model.go` | Handle `AgentToolCallMsg` and `AgentToolResultMsg` to render tool status lines |
+| `internal/messages/messages.go` | Added `AgentConfirmMsg` |
+| `cmd/forge/main.go` | Added `*agent.Agent` field + `confirmFn`; calls `agent.Send(program, blockID, input)`; handles `AgentConfirmMsg` (confirmation prompt in input bar) |
+| `internal/agent/agent.go` | **New file**: `Agent`, `Send()`, `Reset()` |
+| `internal/agent/tools.go` | **New file**: `Tool` type + 4 MVP tools |
+| `internal/agent/prompt.go` | **New file**: `systemPrompt` constant |
 
 `internal/exec`, `internal/session`, `internal/ui/viewport`, `internal/ui/block`, `internal/ui/header`, `internal/ui/input`, `internal/ui/palette` — **no changes**.
 
@@ -823,7 +834,7 @@ Agent.Send(p, blockID, userInput) returns tea.Cmd
 | Hard turn limit | Acceptable risk for v1 with a local model; add as a config option later |
 | Persistent conversation history | PRD §3 explicitly excludes session history persistence across restarts |
 | Tool allowlist / sandbox | Trust-in-local-model decision for v1; document the risk, revisit if remote agents are added |
-| Confirmation prompt for destructive commands | High-value safety feature but requires new UI; schedule as a follow-up task |
+| ~~Confirmation prompt for destructive commands~~ | **Implemented** via `AgentConfirmMsg` + `confirmPending` in root model |
 | Streaming tool call deltas to the UI | Tool calls typically complete in <1s; batching the result is fine for v1 |
 
 ---
