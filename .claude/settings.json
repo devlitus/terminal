@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .github/scripts/inject-task-context.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .github/scripts/scan-secrets.sh",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash .github/scripts/validate-clean-code.sh",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "bash .github/scripts/testing-autorun.sh",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}
