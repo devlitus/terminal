@@ -86,8 +86,9 @@ Specialists live in `.claude/agents/` and are invoked automatically based on the
 - Synthesize specialist output — never relay it raw. Surface conflicts and state your recommendation.
 
 **Utilities (manual slash commands):**
-- `/task [list|start T-XX|done T-XX|new <title>]` — task management
 - `/new-adr <kebab-title>` — create an Architecture Decision Record
+
+**Task management** is handled automatically by the `architect` agent via the `task` skill. The architect creates tasks when a design decision produces actionable work; it also moves tasks between backlog → in-progress → done.
 
 ## Key reference docs
 
