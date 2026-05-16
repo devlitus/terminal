@@ -82,6 +82,7 @@ Specialists live in `.claude/agents/` and are invoked automatically based on the
 **Orchestration workflows:**
 
 _New feature_ — all agents participate in order:
+0. Create branch `T-XX/slug` from main before any code change.
 1. `architect` — design, package boundaries, ADR if needed.
 2. `code-expert` — implementation against the architect's spec.
 3. `security` — audit any security surface in the new code.
