@@ -78,6 +78,7 @@ Specialists live in `.claude/agents/` and are invoked automatically based on the
 | `code-expert` | Writing, reviewing, or refactoring Go code; implementing task acceptance criteria |
 | `security` | Any code touching subprocess spawning, config/key handling, user input → shell |
 | `testing` | Writing or reviewing `*_test.go` files in `internal/` |
+| `code-review` | Final review after implementation: checks all acceptance criteria, Forge conventions, and code quality; flags blockers and suggests improvements |
 
 **Orchestration workflows:**
 
@@ -85,13 +86,15 @@ _New feature_ — all agents participate in order:
 0. Create branch `T-XX/slug` from main before any code change.
 1. `architect` — design, package boundaries, ADR if needed.
 2. `code-expert` — implementation against the architect's spec.
-3. `security` — audit any security surface in the new code.
-4. `testing` — write or update `*_test.go` files.
+3. `code-review` — verify all acceptance criteria and conventions before continuing.
+4. `security` — audit any security surface in the new code.
+5. `testing` — write or update `*_test.go` files.
 
 _Bug / fix / chore_ — minimal team:
 1. `code-expert` — diagnose and fix.
-2. `security` — only if the fix touches subprocess spawning, config/key handling, or user input → shell.
-3. `testing` — only if an existing test must be modified or a regression test is needed.
+2. `code-review` — verify the fix is correct and complete.
+3. `security` — only if the fix touches subprocess spawning, config/key handling, or user input → shell.
+4. `testing` — only if an existing test must be modified or a regression test is needed.
 
 **General rules:**
 - Vague request → ask one clarifying question before delegating.
