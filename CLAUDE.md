@@ -79,9 +79,20 @@ Specialists live in `.claude/agents/` and are invoked automatically based on the
 | `security` | Any code touching subprocess spawning, config/key handling, user input → shell |
 | `testing` | Writing or reviewing `*_test.go` files in `internal/` |
 
-**Delegation rules:**
-- Architecture question → delegate to `architect` first, then `code-expert` for implementation.
-- Code task with security surface → `code-expert` implements, then `security` audits.
+**Orchestration workflows:**
+
+_New feature_ — all agents participate in order:
+1. `architect` — design, package boundaries, ADR if needed.
+2. `code-expert` — implementation against the architect's spec.
+3. `security` — audit any security surface in the new code.
+4. `testing` — write or update `*_test.go` files.
+
+_Bug / fix / chore_ — minimal team:
+1. `code-expert` — diagnose and fix.
+2. `security` — only if the fix touches subprocess spawning, config/key handling, or user input → shell.
+3. `testing` — only if an existing test must be modified or a regression test is needed.
+
+**General rules:**
 - Vague request → ask one clarifying question before delegating.
 - Synthesize specialist output — never relay it raw. Surface conflicts and state your recommendation.
 
